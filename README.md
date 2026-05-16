@@ -1,2 +1,3 @@
-# llm-inference-prod-
-A production-focused LLM inference lab for reducing GenAI latency, GPU cost, and deployment risk.
+# llm-inference-prod
+
+Production-grade LLM inference engineering lab for benchmarking, monitoring, optimizing, and operating local and cloud LLM workloads.
