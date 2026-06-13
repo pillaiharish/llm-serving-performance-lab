@@ -1,0 +1,17 @@
+vllm serve models/Qwen/Qwen2.5-0.5B-Instruct
+
+vLLM version: 0.22.0
+Model: models/Qwen/Qwen2.5-0.5B-Instruct
+Resolved architecture: Qwen2ForCausalLM
+Using max model len 32768
+dtype=torch.bfloat16
+
+Failed to get device capability: SM 12.x requires CUDA >= 12.9.
+Using FlashInfer for top-p & top-k sampling.
+
+Model loading took 0.93 GiB memory and 0.269861 seconds.
+
+EngineCore failed to start.
+
+RuntimeError: FlashInfer requires GPUs with sm75 or higher
+RuntimeError: Engine core initialization failed.

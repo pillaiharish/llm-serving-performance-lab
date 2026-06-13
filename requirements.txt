@@ -1,0 +1,10 @@
+# Runtime and benchmark helper dependencies.
+# Install PyTorch and vLLM separately through Makefile to control CUDA wheels.
+openai>=1.86.0
+requests>=2.32.0
+pandas>=2.2.0
+matplotlib>=3.9.0
+PyYAML>=6.0.2
+rich>=13.9.0
+tqdm>=4.67.0
+matplotlib

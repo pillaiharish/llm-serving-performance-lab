@@ -1,0 +1,21 @@
+# Day 1 tiny benchmark sweep.
+# Keep this small so the first success comes quickly.
+# Increase num_prompts and concurrency only after the baseline is stable.
+
+base_url: http://127.0.0.1:8000
+endpoint: /v1/chat/completions
+backend: openai-chat
+model: qwen2.5-1.5b-instruct
+dataset_name: random
+
+num_prompts: 16
+request_rate: inf
+input_len: 128
+output_len: 64
+concurrency: [1, 2, 4, 8]
+
+percentile_metrics: ttft,tpot,itl,e2el
+metric_percentiles: 50,90,95,99
+
+result_dir: results/day01/raw
+label: day01
