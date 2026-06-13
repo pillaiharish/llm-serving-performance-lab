@@ -4,7 +4,7 @@
 
 Date: 2026-06-13  
 Repo: pillaiharish/llm-serving-performance-lab  
-Commit: TODO_AFTER_COMMIT  
+Commit: 0c25667 
 Machine: admin1-MS-7D75  
 GPU: NVIDIA GeForce RTX 5070 Ti, 16 GB  
 Model: models/Qwen/Qwen2.5-0.5B-Instruct  

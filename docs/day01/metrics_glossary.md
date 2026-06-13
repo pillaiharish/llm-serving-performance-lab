@@ -2,7 +2,7 @@
 
 ## TTFT — Time to First Token
 
-Time from request submission to the first generated token.
+Time from request submission to the first generated token. The time it takes to generate the first token after sending a request. It reflects how fast the model can start responding.
 
 Functions:
 
@@ -16,6 +16,30 @@ Bad sign:
 ```text
 TTFT grows sharply with concurrency or prompt length.
 ```
+
+---
+
+## E2E Latency — End-to-End Latency
+
+Total request time from submission to final token. The time from sending the request to receiving the final token on the user end. Total latency directly affects perceived responsiveness. A fast TTFT followed by slow token generation still leads to a poor experience.
+
+Approximation for streaming generation:
+
+```text
+E2E ≈ TTFT + sum(inter-token gaps)
+```
+A rough simplified estimate is:
+
+```text
+E2E ≈ TTFT + generated_tokens * average_ITL
+```
+
+---
+
+## ITL — Inter-Token Latency
+The time it takes to stream all tokens after the first one. TTFT is excluded, since it measures only the steady generation phase:
+
+Token Generation Time = E2EL – TTFT
 
 ---
 
@@ -41,23 +65,6 @@ Functions:
 ```text
 Useful for comparing generation speed across models/configs.
 Often similar to ITL but reported differently depending on benchmark tool.
-```
-
----
-
-## E2E Latency — End-to-End Latency
-
-Total request time from submission to final token.
-
-Approximation for streaming generation:
-
-```text
-E2E ≈ TTFT + sum(inter-token gaps)
-```
-A rough simplified estimate is:
-
-```text
-E2E ≈ TTFT + generated_tokens * average_ITL
 ```
 
 ---
@@ -141,3 +148,8 @@ many users are streaming at once
 The point where adding concurrency no longer improves useful throughput and p95/p99 latency begins to explode.
 
 The benchmark reports should identify this point.
+
+## Acceptable latency
+
+Acceptable latency depends on usecase. For chatbots we need a latency less than 500ms. For code generation tools to feel good may need less than 100ms latency. For reports genrated reviewed once a day can have acceptable total latency of 30 seconds.
+Our job is to match with the expectations of the usecase.
