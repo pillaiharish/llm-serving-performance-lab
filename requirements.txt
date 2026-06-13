@@ -1,0 +1,7 @@
+# Runtime helper dependencies.
+# PyTorch and vLLM are installed separately because CUDA/Blackwell wheels need explicit control.
+openai>=1.86.0
+pandas>=2.2.0
+matplotlib>=3.9.0
+PyYAML>=6.0.2
+rich>=13.9.0

@@ -1,0 +1,5 @@
+Base URL: http://localhost:8000/v1
+Model: models/Qwen/Qwen2.5-0.5B-Instruct
+Available models:
+- models/Qwen/Qwen2.5-0.5B-Instruct
+Response: SMOKE_TEST_OK

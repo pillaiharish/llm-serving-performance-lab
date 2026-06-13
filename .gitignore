@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local model weights and caches
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+hf_cache/
+huggingface/
+
+# Local wheel bundles / offline installers
+wheelhouse-bundles/
+*.whl
+*.tgz
+*.tar.gz

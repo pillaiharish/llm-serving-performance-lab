@@ -1,0 +1,45 @@
+Executable: /data/llm-inference-prod/.venv/bin/python
+Working directory: /data/inference/llm-serving-performance-lab
+=== System ===
+Python: 3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]
+Platform: Linux-6.17.0-22-generic-x86_64-with-glibc2.39
+
+=== NVIDIA ===
+
+$ nvidia-smi
+Sat Jun 13 11:23:51 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.09             Driver Version: 580.126.09     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 5070 Ti     Off |   00000000:01:00.0  On |                  N/A |
+|  0%   39C    P8             17W /  300W |     129MiB /  16303MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            2275      G   /usr/lib/xorg/Xorg                       77MiB |
+|    0   N/A  N/A            2493      G   /usr/bin/gnome-shell                     23MiB |
++-----------------------------------------------------------------------------------------+
+
+=== Python packages ===
+[OK] torch: 2.11.0+cu130
+[OK] vllm: 0.22.0
+[OK] openai: 2.37.0
+[OK] pandas: 3.0.3
+[OK] matplotlib: 3.11.0
+
+=== CUDA via PyTorch ===
+torch.cuda.is_available(): True
+torch.version.cuda: 13.0
+GPU count: 1
+GPU name: NVIDIA GeForce RTX 5070 Ti
+Capability: (12, 0)
+Arch list: ['sm_75', 'sm_80', 'sm_86', 'sm_90', 'sm_100', 'sm_120']
