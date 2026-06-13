@@ -27,41 +27,47 @@ This lab is built to answer one question:
 
 ## Day 1 deliverable
 
-Day 1 creates the first runnable serving + benchmark loop:
+Day 1 establishes the first serving baseline:
 
 ```text
 1. create Python environment
-2. install PyTorch CUDA 12.8+ stack for Blackwell
-3. install vLLM and benchmark dependencies
-4. start an OpenAI-compatible vLLM server
-5. run a smoke chat request
-6. run a tiny concurrency sweep
-7. save JSON/CSV results
-8. plot first latency/throughput charts
-9. document failures and environment details
+2. verify GPU / CUDA / PyTorch / vLLM environment
+3. attempt local vLLM server startup
+4. document startup failure
+5. apply FlashInfer sampler workaround
+6. run OpenAI-compatible smoke test
+7. save environment and smoke-test evidence
 ```
 
 Start here:
 
 ```bash
-cp configs/vllm_default.env .env
-make setup
-make check-env
-make serve
+source .venv/bin/activate
+source configs/vllm_default.env
+
+python scripts/check_env.py | tee reports/day01_env_check.txt
+
+vllm serve "$MODEL_NAME" \
+  --host "$HOST" \
+  --port "$PORT" \
+  --max-model-len "$MAX_MODEL_LEN" \
+  --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
 ```
 
 In another terminal:
 
 ```bash
 source .venv/bin/activate
-make smoke
-make bench-day1
-make extract-results
-make plot-results
+source configs/vllm_default.env
+
+python scripts/smoke_chat.py | tee reports/day01_smoke_output.txt
 ```
 
-If `make serve` does not work because your GPU/CUDA/vLLM stack is not ready yet, do not hide it. Capture the failure in `reports/day01_baseline_template.md`. A documented failure with clear next steps is still an engineering artifact.
+---
 
+## Day 1 result
+
+The first server attempt failed during vLLM engine initialization after selecting the FlashInfer sampler path. After exporting VLLM_USE_FLASHINFER_SAMPLER=0 and reducing max model length to 4096, the OpenAI-compatible smoke test succeeded.
 
 ---
 

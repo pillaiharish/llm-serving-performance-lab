@@ -76,7 +76,7 @@ vllm serve "$MODEL_NAME" \
 Result:
 
 ```text
-TODO: success or failure
+Success. vLLM server started after exporting VLLM_USE_FLASHINFER_SAMPLER=0 and setting max model length to 4096.
 ```
 
 ## Smoke test
@@ -108,6 +108,8 @@ If the model returns an incorrect explanation of TTFT/ITL, the API smoke test ma
 - Environment check script runs.
 - GPU is detected by PyTorch.
 - vLLM loads the small Qwen model weights.
+- vLLM server started after disabling the FlashInfer sampler path.
+- OpenAI-compatible `/v1/models` and chat completion smoke test succeeded.
 
 ## What failed
 
@@ -123,7 +125,8 @@ If the model returns an incorrect explanation of TTFT/ITL, the API smoke test ma
 
 ## Next actions
 
-- Export `VLLM_USE_FLASHINFER_SAMPLER=0`.
-- Retry vLLM with `--max-model-len 4096`.
-- Rerun smoke test.
-- Move benchmark sweep to Day 2 after the serving loop is stable.
+- Start Day 2 benchmark loop.
+- Run a tiny vLLM benchmark with random input/output lengths.
+- Capture TTFT, TPOT, ITL, and E2E latency.
+- Save raw benchmark output under `results/day02/`.
+- Write `reports/day02_benchmark.md`.
