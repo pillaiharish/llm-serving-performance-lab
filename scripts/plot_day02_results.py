@@ -1,3 +1,6 @@
+"""
+Generate Day 3 latency and throughput plots from the Day 2 summary CSV.
+"""
 from pathlib import Path
 
 import matplotlib.pyplot as plt

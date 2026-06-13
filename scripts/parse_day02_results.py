@@ -1,3 +1,6 @@
+"""
+Parse Day 2 vLLM benchmark JSON files into a Day 3 CSV summary.
+"""
 import json
 from pathlib import Path
 
