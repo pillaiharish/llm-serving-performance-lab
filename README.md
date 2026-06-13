@@ -25,28 +25,6 @@ This lab is built to answer one question:
 
 ---
 
-## Target role signal
-
-Core skills demonstrated here:
-
-```text
-vLLM
-SGLang
-TensorRT-LLM
-OpenAI-compatible serving
-Kubernetes GPU deployment
-Prometheus / Grafana observability
-TTFT / ITL / TPOT / E2E latency
-throughput and goodput benchmarking
-KV cache and prefix caching experiments
-RAG under load
-agent reliability evaluation
-Triton kernel learning
-capacity planning
-```
-
----
-
 ## Day 1 deliverable
 
 Day 1 creates the first runnable serving + benchmark loop:
@@ -92,52 +70,12 @@ If `make serve` does not work because your GPU/CUDA/vLLM stack is not ready yet,
 The default model is intentionally small:
 
 ```text
-Qwen/Qwen2.5-1.5B-Instruct
+models/Qwen/Qwen2.5-0.5B-Instruct
 ```
 
 Reason: Day 1 is about validating the serving and measurement loop. Larger 7B/8B models come after the harness is stable.
 
----
 
-## Benchmark philosophy
-
-Do not report only tokens/sec.
-
-A useful benchmark includes:
-
-```text
-hardware
-GPU driver/CUDA/PyTorch/vLLM versions
-model name and revision when possible
-server configuration
-input length
-output length
-concurrency
-request rate
-TTFT p50/p95/p99
-ITL or TPOT p50/p95/p99
-end-to-end latency p50/p95/p99
-output tokens/sec
-requests/sec
-error rate
-GPU memory
-notes/failures
-```
-
-Raw throughput is not enough. The production question is:
-
-> How much good traffic can the system serve while staying inside latency and reliability limits?
-
----
-
-## Public writing plan
-
-This repo feeds three public surfaces without LinkedIn:
-
-- GitHub: code, benchmark data, reports, dashboards
-- Medium: engineering writeups with commands, charts, failures, lessons
-- X/Twitter: short technical progress logs and benchmark findings
-- harishpillai.com: curated portfolio page linking only the strongest artifacts
 
 ---
 

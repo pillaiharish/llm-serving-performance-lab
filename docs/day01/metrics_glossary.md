@@ -49,10 +49,15 @@ Often similar to ITL but reported differently depending on benchmark tool.
 
 Total request time from submission to final token.
 
-Approximation:
+Approximation for streaming generation:
 
 ```text
-E2E ~= TTFT + output_tokens * ITL
+E2E ≈ TTFT + sum(inter-token gaps)
+```
+A rough simplified estimate is:
+
+```text
+E2E ≈ TTFT + generated_tokens * average_ITL
 ```
 
 ---

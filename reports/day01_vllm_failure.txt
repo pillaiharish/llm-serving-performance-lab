@@ -15,3 +15,7 @@ EngineCore failed to start.
 
 RuntimeError: FlashInfer requires GPUs with sm75 or higher
 RuntimeError: Engine core initialization failed.
+
+Next retry:
+export VLLM_USE_FLASHINFER_SAMPLER=0
+vllm serve models/Qwen/Qwen2.5-0.5B-Instruct --max-model-len 4096

@@ -2,6 +2,10 @@ import importlib
 import platform
 import subprocess
 import sys
+import os
+
+print(f"Executable: {sys.executable}")
+print(f"Working directory: {os.getcwd()}")
 
 
 def check_import(package_name: str) -> None:

@@ -1,6 +1,0 @@
-TTFT (Transfer Transfer Function) and ITL (Iterative Transfer Function) are both techniques used in machine learning to improve the performance of deep neural networks by reducing overfitting.
-
-**TTFT:**
-- **Purpose:** It's designed to reduce the impact of overfitting, which occurs when a model learns the training data too well, capturing noise and details that don't generalize well.
-- **Implementation:** The idea is to replace the weights of a layer with those of another layer, effectively "transferring" information from one layer to another without directly modifying its parameters.
-- **Effect:** This can help prevent the model
