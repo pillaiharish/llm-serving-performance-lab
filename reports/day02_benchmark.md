@@ -141,10 +141,11 @@ Also, the configured random input length was 128, but the saved JSON shows 157 i
 - TTFT measures startup responsiveness, while TPOT/ITL reflect generation behavior after the first token.
 - A benchmark report must include both raw evidence and interpretation.
 - Configured input length and observed tokenized input length may differ.
+- The original benchmark run did not set `--temperature 0`, and vLLM warned that greedy behavior is no longer the default.
+- The script has now been updated with `--temperature 0` for future reproducible reruns.
 
 ## Next actions
 
-- Add `--temperature 0` to the Day 2 benchmark script for reproducibility.
 - Parse the raw JSON into CSV on Day 3.
 - Generate the first chart on Day 3.
 - Plot concurrency versus E2E p95 and output tokens/sec.
