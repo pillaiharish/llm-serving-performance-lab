@@ -20,6 +20,7 @@ for c in 1 2 4; do
     --num-prompts 16 \
     --request-rate inf \
     --max-concurrency "$c" \
+    --temperature 0 \
     --percentile-metrics ttft,tpot,itl,e2el \
     --metric-percentiles 50,90,95,99 \
     --save-result \

@@ -37,21 +37,16 @@ E2E ≈ TTFT + generated_tokens * average_ITL
 ---
 
 ## ITL — Inter-Token Latency
-The time it takes to stream all tokens after the first one. TTFT is excluded, since it measures only the steady generation phase:
 
-Token Generation Time = E2EL – TTFT
-
----
-
-## ITL — Inter-Token Latency
-
-Time between generated output tokens during streaming.
+Time between generated output tokens during streaming. The exact pause between two consecutive tokens. 
+For a single request, the mean of all ITLs equals TPOT, which is why the two are sometimes used interchangeably:
 
 Functions:
 
 ```text
 Controls how smooth streaming feels.
 Decode-heavy workloads care about this.
+Lower ITL means tokens appear more quickly during generation.
 ```
 
 ---
@@ -151,5 +146,12 @@ The benchmark reports should identify this point.
 
 ## Acceptable latency
 
-Acceptable latency depends on usecase. For chatbots we need a latency less than 500ms. For code generation tools to feel good may need less than 100ms latency. For reports genrated reviewed once a day can have acceptable total latency of 30 seconds.
-Our job is to match with the expectations of the usecase.
+Acceptable latency depends on the use case and on which metric is being measured.
+
+Examples:
+
+- chat: low TTFT matters for perceived responsiveness
+- code generation: steady ITL matters because users watch tokens stream
+- batch reports: E2E latency can be much higher if the job is asynchronous
+
+The engineering task is to define an SLO for the specific workload instead of using one latency target for every product.
