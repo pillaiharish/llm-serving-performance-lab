@@ -81,7 +81,36 @@ models/Qwen/Qwen2.5-0.5B-Instruct
 
 Reason: Day 1 is about validating the serving and measurement loop. Larger 7B/8B models come after the harness is stable.
 
+---
 
+## Current artifacts
+
+- Day 1: local vLLM baseline, environment check, startup failure, and smoke test
+- Day 2: first vLLM benchmark loop with raw JSON and logs
+- Day 3: parsed CSV summary and first latency/throughput plots
+- Day 4: benchmark methodology and result interpretation docs
+
+---
+
+## Benchmark workflow
+
+```text
+vLLM benchmark JSON -> CSV summary -> plots -> report
+```
+
+---
+
+# Key docs:
+
+docs/benchmark_methodology.md
+docs/results_interpretation.md
+docs/day01/metrics_glossary.md
+
+---
+
+## Benchmark caveat
+
+Current results are small lab benchmarks. They are useful for learning and comparison inside this repo, but they are not production capacity claims yet.
 
 ---
 
