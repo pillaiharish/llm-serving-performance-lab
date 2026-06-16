@@ -100,11 +100,13 @@ vLLM benchmark JSON -> CSV summary -> plots -> report
 
 ---
 
-# Key docs:
+## Key docs
 
+```text
 docs/benchmark_methodology.md
 docs/results_interpretation.md
 docs/day01/metrics_glossary.md
+```
 
 ---
 
