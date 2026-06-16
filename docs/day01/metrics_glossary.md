@@ -84,7 +84,7 @@ High throughput can still be unusable if p95/p99 latency is bad.
 
 ## Goodput
 
-Requests/sec that meet the defined latency SLO.
+Requests/sec that meet the defined latency Service Level Objectives (SLO).
 
 Example:
 
