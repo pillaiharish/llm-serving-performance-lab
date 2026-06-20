@@ -1,0 +1,96 @@
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x751074165440>, trust_remote_code=False, seed=0, num_prompts=64, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=128, random_output_len=64, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='openai-chat', base_url='http://127.0.0.1:8000', host='127.0.0.1', port=8000, endpoint='/v1/chat/completions', header=None, max_concurrency=8, model='models/Qwen/Qwen2.5-0.5B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=True, append_result=False, metadata=None, result_dir='results/day06/raw', result_filename='day06_c8_i128_o64_n64.json', ignore_eos=False, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='50,90,95,99', goodput=None, request_id_prefix='bench-f88cfdd7-', top_p=None, top_k=None, min_p=None, temperature=0.0, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 06-20 21:45:52 [utils.py:90] Sampling input_len from [128, 128] and output_len from [64, 64]
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: 8
+  0%|          | 0/64 [00:00<?, ?it/s]  2%|▏         | 1/64 [00:00<00:09,  6.78it/s] 14%|█▍        | 9/64 [00:00<00:01, 35.05it/s] 27%|██▋       | 17/64 [00:00<00:01, 44.48it/s] 39%|███▉      | 25/64 [00:00<00:00, 48.96it/s] 52%|█████▏    | 33/64 [00:00<00:00, 51.39it/s] 64%|██████▍   | 41/64 [00:00<00:00, 52.89it/s] 77%|███████▋  | 49/64 [00:01<00:00, 53.58it/s] 89%|████████▉ | 57/64 [00:01<00:00, 54.22it/s]100%|██████████| 64/64 [00:01<00:00, 54.92it/s]
+
+                             Output tokens per second
+  4000 +--------------------------------------------------------------------+
+       |                                                                    |
+  3500 |*                                                                   |
+       | **                                                                 |
+       |   ***                                                              |
+  3000 |      **                                                            |
+       |        ***                                                         |
+  2500 |           **                                                       |
+       |             ***                                                    |
+  2000 |                **                                                  |
+       |                  ***                                               |
+       |                     **                                             |
+  1500 |                       ***                                          |
+       |                          **                                        |
+  1000 |                            ***                                     |
+       |                               **                                   |
+       |                                 *******                            |
+   500 |                                        ***********                 |
+       |                                                   ************     |
+     0 +--------------------------------------------------------------------+
+       0               0.5                1               1.5               2
+
+                         Concurrent requests per second
+  60 +----------------------------------------------------------------------+
+     |*                                                                     |
+     | ***                                                                  |
+  50 |    **                                                                |
+     |      ***                                                             |
+     |         ***                                                          |
+  40 |            ***                                                       |
+     |               **                                                     |
+     |                 ***                                                  |
+  30 |                    ***                                               |
+     |                       ***                                            |
+     |                          ***                                         |
+     |                             **                                       |
+  20 |                               ***                                    |
+     |                                  *****                               |
+     |                                       *******                        |
+  10 |                                              *******                 |
+     |                                                     *******          |
+     |                                                            *******   |
+   0 +----------------------------------------------------------------------+
+     0                0.5                1               1.5                2
+============ Serving Benchmark Result ============
+Successful requests:                     64        
+Failed requests:                         0         
+Maximum request concurrency:             8         
+Benchmark duration (s):                  1.17      
+Total input tokens:                      10048     
+Total generated tokens:                  4096      
+Request throughput (req/s):              54.92     
+Output token throughput (tok/s):         3515.04   
+Peak output token throughput (tok/s):    3576.00   
+Peak concurrent requests:                56.00     
+Total token throughput (tok/s):          12137.87  
+---------------Time to First Token----------------
+Mean TTFT (ms):                          12.22     
+Median TTFT (ms):                        12.05     
+P50 TTFT (ms):                           12.05     
+P90 TTFT (ms):                           15.16     
+P95 TTFT (ms):                           16.12     
+P99 TTFT (ms):                           16.35     
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          2.11      
+Median TPOT (ms):                        2.10      
+P50 TPOT (ms):                           2.10      
+P90 TPOT (ms):                           2.12      
+P95 TPOT (ms):                           2.12      
+P99 TPOT (ms):                           2.12      
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           2.07      
+Median ITL (ms):                         2.11      
+P50 ITL (ms):                            2.11      
+P90 ITL (ms):                            2.17      
+P95 ITL (ms):                            2.22      
+P99 ITL (ms):                            2.49      
+----------------End-to-end Latency----------------
+Mean E2EL (ms):                          144.96    
+Median E2EL (ms):                        145.13    
+P50 E2EL (ms):                           145.13    
+P90 E2EL (ms):                           147.12    
+P95 E2EL (ms):                           148.93    
+P99 E2EL (ms):                           149.14    
+==================================================

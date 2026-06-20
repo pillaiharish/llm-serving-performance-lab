@@ -1,0 +1,73 @@
+"""
+Generate Day 6 latency and throughput plots from the Day 6 summary CSV.
+"""
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
+
+
+CSV_PATH = Path("results/day06/day06_summary.csv")
+PLOT_DIR = Path("plots/day06")
+
+
+def main() -> None:
+    PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(CSV_PATH)
+
+    # Chart 1: concurrency vs E2E p95
+    plt.figure()
+    plt.plot(df["concurrency"], df["e2el_p95_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("E2E p95 latency (ms)")
+    plt.title("Day 6: Concurrency vs E2E p95 latency")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_e2e_p95.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 2: concurrency vs output throughput
+    plt.figure()
+    plt.plot(df["concurrency"], df["output_throughput_tok_s"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("Output throughput (tokens/sec)")
+    plt.title("Day 6: Concurrency vs output throughput")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_output_tps.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 3: concurrency vs ttft p95
+    plt.figure()
+    plt.plot(df["concurrency"], df["ttft_p95_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("TTFT p95 (ms)")
+    plt.title("Day 6: Concurrency vs TTFT p95")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_ttft_p95.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 4: concurrency vs ttft p50
+    plt.figure()
+    plt.plot(df["concurrency"], df["ttft_p50_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("TTFT p50 (ms)")
+    plt.title("Day 6: Concurrency vs TTFT p50")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_ttft_p50.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 5: concurrency vs itl p50
+    plt.figure()
+    plt.plot(df["concurrency"], df["itl_p50_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("ITL p50 (ms)")
+    plt.title("Day 6: Concurrency vs inter token latency")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_itl_p50.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    print(f"Saved plots to {PLOT_DIR}")
+
+
+if __name__ == "__main__":
+    main()
