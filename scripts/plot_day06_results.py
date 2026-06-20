@@ -36,6 +36,36 @@ def main() -> None:
     plt.savefig(PLOT_DIR / "day06_concurrency_vs_output_tps.png", bbox_inches="tight", dpi=160)
     plt.close()
 
+    # Chart 3: concurrency vs ttft p95
+    plt.figure()
+    plt.plot(df["concurrency"], df["ttft_p95_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("TTFT p95 (ms)")
+    plt.title("Day 6: Concurrency vs TTFT p95")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_ttft_p95.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 4: concurrency vs ttft p50
+    plt.figure()
+    plt.plot(df["concurrency"], df["ttft_p50_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("TTFT p50 (ms)")
+    plt.title("Day 6: Concurrency vs TTFT p50")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_ttft_p50.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
+    # Chart 5: concurrency vs itl p50
+    plt.figure()
+    plt.plot(df["concurrency"], df["itl_p50_ms"], marker="o")
+    plt.xlabel("Max concurrency")
+    plt.ylabel("ITL p50 (ms)")
+    plt.title("Day 6: Concurrency vs inter token latency")
+    plt.grid(True)
+    plt.savefig(PLOT_DIR / "day06_concurrency_vs_itl_p50.png", bbox_inches="tight", dpi=160)
+    plt.close()
+
     print(f"Saved plots to {PLOT_DIR}")
 
 
