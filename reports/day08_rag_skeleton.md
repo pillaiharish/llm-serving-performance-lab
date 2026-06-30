@@ -78,3 +78,16 @@ request
 → prompt construction
 → generation
 → response
+
+## Next steps
+
+Future work can add:
+
+- basic retrieval plus generation
+- prompt construction timing
+- RAG correctness evaluation
+- concurrent RAG requests
+- retrieval latency versus generation latency comparison
+- vector search
+- reranking
+- larger corpora

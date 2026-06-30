@@ -55,7 +55,7 @@ Throughput measures how much work the system completes per unit time. For LLM se
 
 ================================================================================
 Query: Why are these benchmarks not production capacity claims?
-Retrieval latency ms: 0.022
+Retrieval latency ms: 0.023
 Top-k results: 1
 
 Rank: 1
@@ -67,5 +67,5 @@ Text:
 Small local benchmarks are useful for learning and comparison, but they are not production capacity claims. Production serving depends on traffic shape, model size, hardware, batching, memory pressure, queueing, availability requirements, and workload diversity.
 
 ================================================================================
-Total smoke-test runtime ms: 0.260
+Total smoke-test runtime ms: 0.264
 

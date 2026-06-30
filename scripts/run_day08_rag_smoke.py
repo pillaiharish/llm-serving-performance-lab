@@ -1,7 +1,11 @@
 from __future__ import annotations
-
 import time
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from rag.simple_retriever import SimpleRetriever
 
@@ -14,7 +18,7 @@ QUERIES = [
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = REPO_ROOT
     corpus_path = repo_root / "rag" / "sample_corpus.md"
     output_path = repo_root / "results" / "day08" / "rag_smoke_output.txt"
 
