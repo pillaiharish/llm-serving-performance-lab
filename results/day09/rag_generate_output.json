@@ -1,0 +1,118 @@
+{
+  "day": 9,
+  "name": "basic_rag_generation_smoke",
+  "model_name": "models/Qwen/Qwen2.5-0.5B-Instruct",
+  "base_url": "http://localhost:8000/v1",
+  "corpus_path": "llm-serving-performance-lab/rag/sample_corpus.md",
+  "chunks_loaded": 9,
+  "total_run_ms": 207.637,
+  "queries": [
+    {
+      "query": "What is TTFT?",
+      "top_k": 3,
+      "retrieval_ms": 0.057,
+      "prompt_build_ms": 0.004,
+      "generation_first_token_ms": 113.966,
+      "generation_e2e_ms": 119.704,
+      "total_rag_e2e_ms": 119.779,
+      "retrieved_chunks": [
+        {
+          "rank": 1,
+          "chunk_id": "chunk-001",
+          "title": "TTFT",
+          "score": 4.0956,
+          "matched_terms": [
+            "ttft"
+          ],
+          "text": "Time To First Token measures how long the client waits before receiving the first generated token. TTFT is strongly affected by prompt processing, queueing, model load, batching behavior, and server overhead."
+        },
+        {
+          "rank": 2,
+          "chunk_id": "chunk-006",
+          "title": "Concurrency",
+          "score": 1.5969,
+          "matched_terms": [
+            "ttft"
+          ],
+          "text": "Concurrency is the number of requests being handled at the same time. Higher concurrency can increase throughput, but it can also increase TTFT and tail latency."
+        },
+        {
+          "rank": 3,
+          "chunk_id": "chunk-007",
+          "title": "Prompt Length",
+          "score": 1.5707,
+          "matched_terms": [
+            "ttft"
+          ],
+          "text": "Prompt length affects the prefill phase. Longer prompts usually increase TTFT because the model must process more input tokens before generating output."
+        }
+      ],
+      "answer": "Time To First Token"
+    },
+    {
+      "query": "How does concurrency affect throughput?",
+      "top_k": 3,
+      "retrieval_ms": 0.053,
+      "prompt_build_ms": 0.004,
+      "generation_first_token_ms": 7.33,
+      "generation_e2e_ms": 45.352,
+      "total_rag_e2e_ms": 45.422,
+      "retrieved_chunks": [
+        {
+          "rank": 1,
+          "chunk_id": "chunk-006",
+          "title": "Concurrency",
+          "score": 7.191,
+          "matched_terms": [
+            "concurrency",
+            "throughput"
+          ],
+          "text": "Concurrency is the number of requests being handled at the same time. Higher concurrency can increase throughput, but it can also increase TTFT and tail latency."
+        },
+        {
+          "rank": 2,
+          "chunk_id": "chunk-005",
+          "title": "Throughput",
+          "score": 6.92,
+          "matched_terms": [
+            "concurrency",
+            "throughput"
+          ],
+          "text": "Throughput measures how much work the system completes per unit time. For LLM serving, output tokens per second is often used. Throughput can improve with concurrency until the system becomes saturated."
+        }
+      ],
+      "answer": "Concurrency increases throughput by allowing more requests to be processed simultaneously, which can lead to improved performance."
+    },
+    {
+      "query": "Why are these benchmarks not production capacity claims?",
+      "top_k": 3,
+      "retrieval_ms": 0.051,
+      "prompt_build_ms": 0.003,
+      "generation_first_token_ms": 6.3,
+      "generation_e2e_ms": 42.267,
+      "total_rag_e2e_ms": 42.333,
+      "retrieved_chunks": [
+        {
+          "rank": 1,
+          "chunk_id": "chunk-009",
+          "title": "Benchmark Caveats",
+          "score": 11.4276,
+          "matched_terms": [
+            "benchmarks",
+            "capacity",
+            "claims",
+            "not",
+            "production"
+          ],
+          "text": "Small local benchmarks are useful for learning and comparison, but they are not production capacity claims. Production serving depends on traffic shape, model size, hardware, batching, memory pressure, queueing, availability requirements, and workload diversity."
+        }
+      ],
+      "answer": "Small local benchmarks are not production capacity claims because they are used for learning and comparison purposes."
+    }
+  ],
+  "notes": [
+    "This is a single-request RAG generation smoke test.",
+    "This is not a RAG benchmark under load.",
+    "Retrieval, prompt construction, generation, and total RAG timing are separated."
+  ]
+}
