@@ -68,17 +68,6 @@ vllm serve "$MODEL_NAME" \
   --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
 ```
 
-## Run the Day 9 smoke test in another terminal:
-
-```bash
-source .venv/bin/activate
-source configs/vllm_default.env
-
-python -m py_compile rag/simple_retriever.py scripts/run_day09_rag_generate.py
-python scripts/run_day09_rag_generate.py
-python -m json.tool results/day09/rag_generate_output.json > /dev/null
-```
-
 ## Observations
 
 The test verifies that retrieval and generation can be connected in one local RAG path.
