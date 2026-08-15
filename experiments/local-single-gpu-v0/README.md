@@ -1,10 +1,8 @@
 ## Running this historical experiment
 
-```markdown
 Commands in this directory assume the working directory is:
 
 `experiments/local-single-gpu-v0/`
-```
 
 # LLM Serving Performance Lab
 
