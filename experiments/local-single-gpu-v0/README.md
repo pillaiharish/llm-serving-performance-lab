@@ -2,7 +2,9 @@
 
 Commands in this directory assume the working directory is:
 
-experiments/local-single-gpu-v0/
+```markdown
+[`experiments/local-single-gpu-v0/`](experiments/local-single-gpu-v0/)
+```
 
 # LLM Serving Performance Lab
 
