@@ -17,6 +17,7 @@ Slentore requires Go 1.22 or newer.
 
 ```bash
 go build -o build/slentore ./cmd/slentore
+go build -o build/slentore-fake-server ./cmd/slentore-fake-server
 ```
 
 The only non-standard-library dependency is `go.yaml.in/yaml/v3`, used for
@@ -119,6 +120,87 @@ Slentore sends:
 
 Generated content is parsed for byte counts and timing but is not streamed to
 the terminal or accumulated in memory.
+
+## Deterministic local fake server
+
+`slentore-fake-server` is a loopback-only-by-default OpenAI-compatible SSE
+fixture server. It provides controlled HTTP and streaming delays so Slentore's
+one-request measurement, failure handling, and artifacts can be validated
+without a GPU, model, credential, cloud endpoint, or network access.
+
+Start the default normal profile:
+
+```bash
+build/slentore-fake-server \
+  --listen 127.0.0.1:18080 \
+  --mode normal \
+  --header-delay 50ms \
+  --first-content-delay 100ms \
+  --chunk-interval 20ms \
+  --content-chunks 4 \
+  --usage-delay 10ms \
+  --done-delay 10ms \
+  --prompt-tokens 16 \
+  --completion-tokens 4
+```
+
+In another terminal, benchmark it exactly like any other OpenAI-compatible
+endpoint:
+
+```bash
+build/slentore bench \
+  --base-url http://127.0.0.1:18080/v1 \
+  --model fake-model \
+  --prompt "benchmark fixture" \
+  --max-output-tokens 4 \
+  --temperature 0 \
+  --timeout 5s \
+  --output-dir runs \
+  --api-key-env ""
+```
+
+The normal timeline is:
+
+```text
+request accepted
+  └─ header_delay (50ms) ─ flush response headers
+       └─ first_content_delay (100ms) ─ content #1
+            ├─ chunk_interval (20ms) ─ content #2
+            ├─ chunk_interval (20ms) ─ content #3
+            └─ chunk_interval (20ms) ─ content #4
+                 └─ finish event
+                      └─ usage_delay (10ms) ─ usage event
+                           └─ done_delay (10ms) ─ [DONE] and EOF
+```
+
+`header_delay` begins after request validation and ends when headers are
+explicitly flushed. `first_content_delay` starts after that flush.
+`chunk_interval` applies only between consecutive content-bearing events.
+`usage_delay` starts after the finish event, and `done_delay` starts after the
+usage event. Every SSE event is flushed independently. With four content
+events and four reported completion tokens, the controlled decode window is
+about 60ms, so TPOT and the three inter-chunk gaps should be about 20ms.
+
+Available modes are:
+
+- `normal`: content, finish, usage, and `[DONE]`.
+- `no-content`: finish, usage, and `[DONE]` without generated content.
+- `http-error`: a fixed `503 Service Unavailable` response.
+- `malformed-json`: valid SSE framing containing invalid JSON.
+- `eof-before-done`: content, finish, and usage followed by EOF without
+  `[DONE]`.
+- `data-after-done`: a normal stream followed by an additional data event.
+
+All delays may be zero. Sleeps stop when the request is canceled, and SIGINT
+or SIGTERM initiates graceful HTTP shutdown. The server validates the streaming
+request shape but never requires authentication and never logs or persists a
+prompt, request body, Authorization header, or generated content.
+
+Real timers and OS scheduling make observed durations approximate: tests check
+ordering, lower bounds, and protocol flushing rather than nanosecond equality.
+The server is a measurement-system fixture, not an LLM performance simulator.
+It does not emulate model tokenization, GPU execution, prefill/decode kernels,
+KV cache, continuous batching, or vLLM scheduling.
 
 ## Timing evidence
 
@@ -251,10 +333,12 @@ servers, and custom transports. It does not require endpoint credentials or
 network access.
 
 ```bash
-gofmt -l .
+gofmt -l cmd internal
 go test ./...
 go vet ./...
 go build ./cmd/slentore
+go build ./cmd/slentore-fake-server
+go test -race ./...
 ```
 
 ## Current scope
@@ -264,4 +348,5 @@ worker pool, jobs/results channel, QPS scheduler, warmup lifecycle, percentile
 aggregation, tokenizer workload generator, database, GPU discovery, deployment
 automation, or observability integration. Future orchestration can reuse one
 shared `http.Client` and call the same `Runner.RunRequest` primitive without
-changing how a request is observed or how its metrics are calculated.
+changing how a request is observed or how its metrics are calculated. The fake
+server validates this primitive but does not add orchestration to it.
