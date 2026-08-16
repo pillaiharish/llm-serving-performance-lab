@@ -1,0 +1,17 @@
+version: 1
+
+endpoint:
+  base_url: "https://ollama.com/v1"
+  api_key_env: "OLLAMA_API_KEY"
+  model: "<model-name>"
+
+request:
+  prompt: "Explain KV cache briefly."
+  max_output_tokens: 64
+  temperature: 0
+
+runtime:
+  timeout: "120s"
+
+capture:
+  output_dir: "runs"
