@@ -1,0 +1,76 @@
+{
+  "run_id": "20260816T105853Z-c8cfb842",
+  "request_id": "req-000001",
+  "time_to_headers": {
+    "available": false,
+    "value": 0,
+    "unit": "ms",
+    "reason": "headers timestamp not available"
+  },
+  "ttfb": {
+    "available": false,
+    "value": 0,
+    "unit": "ms",
+    "reason": "true first-byte timestamp not available"
+  },
+  "ttft": {
+    "available": false,
+    "value": 0,
+    "unit": "ms",
+    "reason": "first content timestamp not available"
+  },
+  "ttlt": {
+    "available": false,
+    "value": 0,
+    "unit": "ms",
+    "reason": "last content timestamp not available"
+  },
+  "e2e": {
+    "available": true,
+    "value": 3.936042,
+    "unit": "ms"
+  },
+  "tpot": {
+    "available": false,
+    "value": 0,
+    "unit": "ms/token",
+    "reason": "server token usage not available"
+  },
+  "output_tokens_per_second": {
+    "available": false,
+    "value": 0,
+    "unit": "tokens/s",
+    "reason": "server token usage not available"
+  },
+  "decode_tokens_per_second": {
+    "available": false,
+    "value": 0,
+    "unit": "tokens/s",
+    "reason": "server token usage not available"
+  },
+  "inter_chunk_latency": {
+    "available": false,
+    "count": 0,
+    "mean_ms": 0,
+    "min_ms": 0,
+    "max_ms": 0,
+    "values_ms": [],
+    "reason": "at least two content events are required"
+  },
+  "itl": {
+    "available": false,
+    "source": "not_available",
+    "reason": "OpenAI-compatible SSE chunks are not guaranteed to map 1:1 to tokenizer tokens"
+  },
+  "token_usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "source": "not_available",
+    "available": false
+  },
+  "stream_event_count": 0,
+  "content_event_count": 0,
+  "response_bytes": 0,
+  "response_body_bytes": 0
+}

@@ -202,6 +202,14 @@ The server is a measurement-system fixture, not an LLM performance simulator.
 It does not emulate model tokenization, GPU execution, prefill/decode kernels,
 KV cache, continuous batching, or vLLM scheduling.
 
+## Real-cloud validation
+
+The first live GPU-backed validation used vLLM 0.26.0, Qwen/Qwen3.5-4B, and
+one NVIDIA RTX A5000 on Vast.ai. See the
+[deployment and reproduction guide](docs/deployments/vast-ai-a5000-vllm.md)
+and the [Slentore smoke report](reports/vast_a5000_slentore_smoke.md) for the
+sanitized remote-client and server-local C=1 evidence.
+
 ## Timing evidence
 
 Configuration, secret lookup, payload marshaling, and HTTP request construction
