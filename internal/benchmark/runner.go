@@ -26,6 +26,7 @@ func NewRunner(executor StreamExecutor) *Runner {
 // future callers, not this primitive.
 func (r *Runner) RunRequest(ctx context.Context, request Request) Result {
 	observation := RequestObservation{
+		RunID:        request.RunID,
 		RequestID:    request.RequestID,
 		StreamEvents: make([]StreamEvent, 0),
 		Usage: TokenUsage{

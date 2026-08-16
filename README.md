@@ -141,14 +141,19 @@ timestamps are retained:
 - `completed_at`: after the response body reaches EOF or failure cleanup has
   completed from the client's perspective.
 
-Go's monotonic clock component is retained in memory for all duration
-calculations. JSON artifacts contain the corresponding RFC3339 wall-clock
-timestamps because monotonic readings are intentionally process-local.
+Each optional wall timestamp is paired with a `*_after_ns` field containing
+the nanosecond offset from `request_started_at`, calculated from the same
+`time.Time` sample. Wall timestamps support external correlation. The offsets
+preserve monotonic-derived elapsed evidence because JSON cannot retain Go's
+process-local monotonic clock component. Metric recomputation prefers offsets
+and falls back to wall-time subtraction only for older observations where the
+relevant optional offsets are absent.
 
-Every valid `data:` event has a sequence number, receipt timestamp, content
-flag, and UTF-8 content-byte count. Usage-only, role-only, empty-delta, finish,
-and `[DONE]` events are retained as zero-content events. Raw event JSON and
-generated strings are not retained.
+Every valid `data:` event has a sequence number, receipt timestamp, canonical
+non-optional `received_after_ns` offset, content flag, and UTF-8 content-byte
+count. Usage-only, role-only, empty-delta, finish, and `[DONE]` events are
+retained as zero-content events. Raw event JSON and generated strings are not
+retained.
 
 The client continues reading through EOF after `[DONE]`. EOF without `[DONE]`,
 malformed JSON, data after `[DONE]`, or an oversized SSE frame is a stream
@@ -158,7 +163,9 @@ failure. The timeout bounds the entire request through `context.Context`.
 
 Metrics are derived only after the measured request completes. Every scalar is
 stored as `{available, value, unit, reason}`; unavailable observations never
-become estimated values, NaN, or infinity.
+become estimated values, NaN, or infinity. The formulas below use timestamp
+names for readability; persisted recomputation uses their request-relative
+nanosecond offsets when present.
 
 ```text
 time_to_headers = headers_received_at - request_started_at
@@ -217,9 +224,14 @@ runs/
 
 - `run.json` contains IDs, Slentore version, model, safe base URL, requested
   output limit, temperature, timeout, prompt byte length, and prompt SHA-256.
-- `observation.json` contains timestamps, event evidence, server usage when
+- `observation.json` contains `(run_id, request_id)`, wall timestamps,
+  request-relative nanosecond offsets, event evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
-- `metrics.json` contains values derived from that observation.
+- `metrics.json` contains `(run_id, request_id)` and values derived from that
+  observation.
+
+All three files remain artifact schema version 1; the observation and metrics
+can be associated by `(run_id, request_id)` without relying on their directory.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.

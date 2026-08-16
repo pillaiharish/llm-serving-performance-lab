@@ -13,6 +13,7 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 )
 
 func TestRunBenchAppliesCLIOverridesAndWritesArtifacts(t *testing.T) {
@@ -83,7 +84,26 @@ capture:
 	if observation.Error != "" || observation.FinishReason != "stop" || observation.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected observation: %+v", observation)
 	}
-	combined := stdout.String() + readText(t, filepath.Join(runDirectory, "run.json")) + readText(t, filepath.Join(runDirectory, "observation.json"))
+	if observation.RunID != metadata.RunID || observation.RequestID != metadata.RequestID {
+		t.Fatalf("observation identity = (%q, %q), metadata identity = (%q, %q)", observation.RunID, observation.RequestID, metadata.RunID, metadata.RequestID)
+	}
+	if observation.HeadersAfterNS == nil || observation.FirstByteAfterNS == nil || observation.FirstStreamEventAfterNS == nil || observation.FirstContentAfterNS == nil || observation.LastContentAfterNS == nil || observation.CompletedAfterNS == nil {
+		t.Fatalf("observation is missing relative timing evidence: %+v", observation)
+	}
+	if len(observation.StreamEvents) != 3 {
+		t.Fatalf("stream events = %d, want 3", len(observation.StreamEvents))
+	}
+	for _, event := range observation.StreamEvents {
+		if event.ReceivedAfterNS < 0 {
+			t.Fatalf("stream event has negative relative offset: %+v", event)
+		}
+	}
+	var requestMetrics metrics.RequestMetrics
+	readJSON(t, filepath.Join(runDirectory, "metrics.json"), &requestMetrics)
+	if requestMetrics.RunID != metadata.RunID || requestMetrics.RequestID != metadata.RequestID {
+		t.Fatalf("metrics identity = (%q, %q), metadata identity = (%q, %q)", requestMetrics.RunID, requestMetrics.RequestID, metadata.RunID, metadata.RequestID)
+	}
+	combined := stdout.String() + readText(t, filepath.Join(runDirectory, "run.json")) + readText(t, filepath.Join(runDirectory, "observation.json")) + readText(t, filepath.Join(runDirectory, "metrics.json"))
 	for _, forbidden := range []string{"private CLI prompt", "hello", "MISSING_FROM_TEST"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("output/artifacts contain forbidden value %q", forbidden)
@@ -121,6 +141,14 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	readJSON(t, filepath.Join(runDirectory, "observation.json"), &observation)
 	if observation.Error != benchmark.ErrNoGeneratedContent.Error() {
 		t.Fatalf("observation error = %q", observation.Error)
+	}
+	if observation.RunID == "" || observation.RequestID != "req-000001" || observation.CompletedAfterNS == nil {
+		t.Fatalf("failure observation is missing identity or completion offset: %+v", observation)
+	}
+	var requestMetrics metrics.RequestMetrics
+	readJSON(t, filepath.Join(runDirectory, "metrics.json"), &requestMetrics)
+	if requestMetrics.RunID != observation.RunID || requestMetrics.RequestID != observation.RequestID {
+		t.Fatalf("failure artifact identities differ: observation=(%q, %q), metrics=(%q, %q)", observation.RunID, observation.RequestID, requestMetrics.RunID, requestMetrics.RequestID)
 	}
 	if !strings.Contains(stdout.String(), benchmark.ErrNoGeneratedContent.Error()) {
 		t.Fatalf("summary does not report no-content failure: %q", stdout.String())

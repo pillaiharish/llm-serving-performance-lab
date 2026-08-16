@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 	}
 	observation := newObservation()
 	err = client.Execute(context.Background(), benchmark.Request{
-		RequestID: "req-000001", Model: "test-model", Prompt: "private prompt", MaxOutputTokens: 64,
+		RunID: "run-001", RequestID: "req-000001", Model: "test-model", Prompt: "private prompt", MaxOutputTokens: 64,
 	}, &observation)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -60,8 +61,14 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 	if observation.RequestStartedAt == nil || observation.FirstByteAt == nil || observation.HeadersReceivedAt == nil || observation.CompletedAt == nil {
 		t.Fatalf("missing HTTP timestamps: %+v", observation)
 	}
+	if observation.FirstByteAfterNS == nil || observation.HeadersAfterNS == nil || observation.CompletedAfterNS == nil {
+		t.Fatalf("missing HTTP relative offsets: %+v", observation)
+	}
 	if observation.FirstStreamEventAt == nil || observation.FirstContentAt == nil || observation.LastContentAt == nil {
 		t.Fatalf("missing stream timestamps: %+v", observation)
+	}
+	if observation.FirstStreamEventAfterNS == nil || observation.FirstContentAfterNS == nil || observation.LastContentAfterNS == nil {
+		t.Fatalf("missing stream relative offsets: %+v", observation)
 	}
 	if observation.StatusCode != http.StatusOK || observation.ResponseBodyBytes != int64(len(fixture)) {
 		t.Fatalf("status/body bytes = %d/%d", observation.StatusCode, observation.ResponseBodyBytes)
@@ -78,6 +85,9 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 		if event.HasContent {
 			contentEvents++
 			contentBytes += event.ContentBytes
+		}
+		if event.ReceivedAfterNS < 0 || index > 0 && event.ReceivedAfterNS < observation.StreamEvents[index-1].ReceivedAfterNS {
+			t.Fatalf("unordered stream relative offsets: %+v", observation.StreamEvents)
 		}
 	}
 	if contentEvents != 2 || contentBytes != 11 {
@@ -97,6 +107,78 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 	}
 }
 
+func TestClientCapturesDeterministicRelativeOffsets(t *testing.T) {
+	fixture := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n"
+	start := time.Now()
+	timestamps := []time.Time{
+		start,
+		start.Add(40 * time.Millisecond),
+		start.Add(45 * time.Millisecond),
+		start.Add(100 * time.Millisecond),
+		start.Add(120 * time.Millisecond),
+		start.Add(150 * time.Millisecond),
+		start.Add(190 * time.Millisecond),
+		start.Add(200 * time.Millisecond),
+	}
+	nextTimestamp := 0
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		trace := httptrace.ContextClientTrace(request.Context())
+		if trace == nil || trace.GotFirstResponseByte == nil {
+			t.Fatal("first-byte trace hook not installed")
+		}
+		trace.GotFirstResponseByte()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(fixture)),
+			Request:    request,
+		}, nil
+	})
+	client, err := NewClient(&http.Client{Transport: transport}, "http://example.test/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	client.now = func() time.Time {
+		if nextTimestamp >= len(timestamps) {
+			t.Fatalf("clock sampled more than %d times", len(timestamps))
+		}
+		observed := timestamps[nextTimestamp]
+		nextTimestamp++
+		return observed
+	}
+
+	observation := newObservation()
+	err = client.Execute(context.Background(), benchmark.Request{
+		RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+	}, &observation)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if nextTimestamp != len(timestamps) {
+		t.Fatalf("clock sampled %d times, want %d", nextTimestamp, len(timestamps))
+	}
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.FirstByteAt, observation.FirstByteAfterNS, 40*time.Millisecond)
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.HeadersReceivedAt, observation.HeadersAfterNS, 45*time.Millisecond)
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.FirstStreamEventAt, observation.FirstStreamEventAfterNS, 100*time.Millisecond)
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.FirstContentAt, observation.FirstContentAfterNS, 100*time.Millisecond)
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.LastContentAt, observation.LastContentAfterNS, 120*time.Millisecond)
+	assertTimestampOffset(t, observation.RequestStartedAt, observation.CompletedAt, observation.CompletedAfterNS, 200*time.Millisecond)
+	wantEventOffsets := []int64{
+		(100 * time.Millisecond).Nanoseconds(),
+		(120 * time.Millisecond).Nanoseconds(),
+		(150 * time.Millisecond).Nanoseconds(),
+		(190 * time.Millisecond).Nanoseconds(),
+	}
+	for index, want := range wantEventOffsets {
+		if observation.StreamEvents[index].ReceivedAfterNS != want {
+			t.Fatalf("event %d offset = %d, want %d", index, observation.StreamEvents[index].ReceivedAfterNS, want)
+		}
+	}
+}
+
 func TestClientHandlesNonContentEvents(t *testing.T) {
 	fixture := "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
 		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n" +
@@ -108,6 +190,9 @@ func TestClientHandlesNonContentEvents(t *testing.T) {
 	}
 	if observation.FinishReason != "stop" || !observation.Usage.Available || observation.FirstContentAt != nil {
 		t.Fatalf("unexpected observation: %+v", observation)
+	}
+	if observation.FirstContentAfterNS != nil || observation.LastContentAfterNS != nil {
+		t.Fatalf("non-content stream has content offsets: %+v", observation)
 	}
 	for _, event := range observation.StreamEvents {
 		if event.HasContent || event.ContentBytes != 0 {
@@ -202,7 +287,7 @@ func TestClientContextCancellation(t *testing.T) {
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
-	if observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.FirstByteAt != nil || observation.StatusCode != 0 {
+	if observation.RunID != "run-001" || observation.RequestID != "req-000001" || observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.CompletedAfterNS == nil || observation.FirstByteAt != nil || observation.FirstByteAfterNS != nil || observation.HeadersReceivedAt != nil || observation.HeadersAfterNS != nil || observation.StatusCode != 0 {
 		t.Fatalf("unexpected cancellation observation: %+v", observation)
 	}
 }
@@ -222,7 +307,7 @@ func TestClientTransportAndDeadlineFailures(t *testing.T) {
 		if err == nil || !errors.As(err, &dnsError) {
 			t.Fatalf("error = %v, want DNS error", err)
 		}
-		if observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.StatusCode != 0 {
+		if observation.RunID != "run-001" || observation.RequestID != "req-000001" || observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.CompletedAfterNS == nil || observation.HeadersReceivedAt != nil || observation.HeadersAfterNS != nil || observation.StatusCode != 0 {
 			t.Fatalf("unexpected DNS failure observation: %+v", observation)
 		}
 	})
@@ -242,7 +327,7 @@ func TestClientTransportAndDeadlineFailures(t *testing.T) {
 		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("error = %v, want context.DeadlineExceeded", err)
 		}
-		if observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.StatusCode != 0 {
+		if observation.RequestStartedAt == nil || observation.CompletedAt == nil || observation.CompletedAfterNS == nil || observation.HeadersReceivedAt != nil || observation.HeadersAfterNS != nil || observation.StatusCode != 0 {
 			t.Fatalf("unexpected deadline observation: %+v", observation)
 		}
 	})
@@ -261,16 +346,30 @@ func executeFixture(t *testing.T, fixture string, status int) (benchmark.Request
 	}
 	observation := newObservation()
 	err = client.Execute(context.Background(), benchmark.Request{
-		RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+		RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
 	}, &observation)
 	return observation, err
 }
 
 func newObservation() benchmark.RequestObservation {
 	return benchmark.RequestObservation{
+		RunID:        "run-001",
 		RequestID:    "req-000001",
 		StreamEvents: make([]benchmark.StreamEvent, 0),
 		Usage:        benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable},
+	}
+}
+
+func assertTimestampOffset(t *testing.T, started, observed *time.Time, offset *int64, want time.Duration) {
+	t.Helper()
+	if started == nil || observed == nil || offset == nil {
+		t.Fatalf("missing timestamp/offset pair: started=%v observed=%v offset=%v", started, observed, offset)
+	}
+	if got := observed.Sub(*started); got != want {
+		t.Fatalf("wall timestamp delta = %s, want %s", got, want)
+	}
+	if *offset != want.Nanoseconds() {
+		t.Fatalf("relative offset = %d, want %d", *offset, want.Nanoseconds())
 	}
 }
 

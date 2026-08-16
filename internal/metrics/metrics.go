@@ -28,6 +28,7 @@ type ITLAvailability struct {
 }
 
 type RequestMetrics struct {
+	RunID                 string               `json:"run_id"`
 	RequestID             string               `json:"request_id"`
 	TimeToHeaders         Scalar               `json:"time_to_headers"`
 	TTFB                  Scalar               `json:"ttfb"`

@@ -18,12 +18,13 @@ func Calculate(observation benchmark.RequestObservation) RequestMetrics {
 	}
 
 	result := RequestMetrics{
+		RunID:             observation.RunID,
 		RequestID:         observation.RequestID,
-		TimeToHeaders:     durationScalar(observation.RequestStartedAt, observation.HeadersReceivedAt, "headers timestamp not available"),
-		TTFB:              durationScalar(observation.RequestStartedAt, observation.FirstByteAt, "true first-byte timestamp not available"),
-		TTFT:              durationScalar(observation.RequestStartedAt, observation.FirstContentAt, "first content timestamp not available"),
-		TTLT:              durationScalar(observation.RequestStartedAt, observation.LastContentAt, "last content timestamp not available"),
-		E2E:               durationScalar(observation.RequestStartedAt, observation.CompletedAt, "completion timestamp not available"),
+		TimeToHeaders:     durationScalar(observation.HeadersAfterNS, observation.RequestStartedAt, observation.HeadersReceivedAt, "headers timestamp not available"),
+		TTFB:              durationScalar(observation.FirstByteAfterNS, observation.RequestStartedAt, observation.FirstByteAt, "true first-byte timestamp not available"),
+		TTFT:              durationScalar(observation.FirstContentAfterNS, observation.RequestStartedAt, observation.FirstContentAt, "first content timestamp not available"),
+		TTLT:              durationScalar(observation.LastContentAfterNS, observation.RequestStartedAt, observation.LastContentAt, "last content timestamp not available"),
+		E2E:               durationScalar(observation.CompletedAfterNS, observation.RequestStartedAt, observation.CompletedAt, "completion timestamp not available"),
 		TokenUsage:        observation.Usage,
 		StreamEventCount:  len(observation.StreamEvents),
 		ContentEventCount: len(contentEvents),
@@ -42,14 +43,12 @@ func Calculate(observation benchmark.RequestObservation) RequestMetrics {
 	return result
 }
 
-func durationScalar(start, end *time.Time, missingReason string) Scalar {
-	if start == nil || end == nil {
-		return unavailable("ms", missingReason)
+func durationScalar(offsetNS *int64, start, end *time.Time, missingReason string) Scalar {
+	durationNS, reason := elapsedDurationNS(offsetNS, start, end, missingReason)
+	if reason != "" {
+		return unavailable("ms", reason)
 	}
-	if end.Before(*start) {
-		return unavailable("ms", "end timestamp precedes start timestamp")
-	}
-	return available(end.Sub(*start).Seconds()*1000, "ms")
+	return available(float64(durationNS)/float64(time.Millisecond), "ms")
 }
 
 func calculateInterChunkLatency(contentEvents []benchmark.StreamEvent) InterChunkLatency {
@@ -60,13 +59,21 @@ func calculateInterChunkLatency(contentEvents []benchmark.StreamEvent) InterChun
 	}
 
 	values := make([]float64, 0, len(contentEvents)-1)
+	if contentEvents[0].ReceivedAfterNS < 0 {
+		result.Reason = "content event relative offsets must not be negative"
+		return result
+	}
 	for index := 1; index < len(contentEvents); index++ {
-		gap := contentEvents[index].ReceivedAt.Sub(contentEvents[index-1].ReceivedAt)
-		if gap < 0 {
-			result.Reason = "content event timestamps are not ordered"
+		if contentEvents[index].ReceivedAfterNS < 0 {
+			result.Reason = "content event relative offsets must not be negative"
 			return result
 		}
-		values = append(values, gap.Seconds()*1000)
+		gapNS := contentEvents[index].ReceivedAfterNS - contentEvents[index-1].ReceivedAfterNS
+		if gapNS < 0 {
+			result.Reason = "content event relative offsets are not ordered"
+			return result
+		}
+		values = append(values, float64(gapNS)/float64(time.Millisecond))
 	}
 
 	minimum := values[0]
@@ -91,11 +98,11 @@ func calculateInterChunkLatency(contentEvents []benchmark.StreamEvent) InterChun
 }
 
 func calculateTPOT(observation benchmark.RequestObservation, contentEventCount int) Scalar {
-	window, reason := decodeWindow(observation, contentEventCount)
+	windowNS, reason := decodeWindowNS(observation, contentEventCount)
 	if reason != "" {
 		return unavailable("ms/token", reason)
 	}
-	return available(window.Seconds()*1000/float64(observation.Usage.OutputTokens-1), "ms/token")
+	return available(float64(windowNS)/float64(time.Millisecond)/float64(observation.Usage.OutputTokens-1), "ms/token")
 }
 
 func calculateOutputRate(observation benchmark.RequestObservation) Scalar {
@@ -105,25 +112,25 @@ func calculateOutputRate(observation benchmark.RequestObservation) Scalar {
 	if observation.Usage.OutputTokens < 0 {
 		return unavailable("tokens/s", "output token count is negative")
 	}
-	if observation.RequestStartedAt == nil || observation.CompletedAt == nil {
-		return unavailable("tokens/s", "end-to-end timestamps not available")
-	}
-	duration := observation.CompletedAt.Sub(*observation.RequestStartedAt)
-	if duration <= 0 {
-		return unavailable("tokens/s", "end-to-end duration must be positive")
-	}
-	return available(float64(observation.Usage.OutputTokens)/duration.Seconds(), "tokens/s")
-}
-
-func calculateDecodeRate(observation benchmark.RequestObservation, contentEventCount int) Scalar {
-	window, reason := decodeWindow(observation, contentEventCount)
+	durationNS, reason := elapsedDurationNS(observation.CompletedAfterNS, observation.RequestStartedAt, observation.CompletedAt, "end-to-end timestamps not available")
 	if reason != "" {
 		return unavailable("tokens/s", reason)
 	}
-	return available(float64(observation.Usage.OutputTokens-1)/window.Seconds(), "tokens/s")
+	if durationNS <= 0 {
+		return unavailable("tokens/s", "end-to-end duration must be positive")
+	}
+	return available(float64(observation.Usage.OutputTokens)/(float64(durationNS)/float64(time.Second)), "tokens/s")
 }
 
-func decodeWindow(observation benchmark.RequestObservation, contentEventCount int) (time.Duration, string) {
+func calculateDecodeRate(observation benchmark.RequestObservation, contentEventCount int) Scalar {
+	windowNS, reason := decodeWindowNS(observation, contentEventCount)
+	if reason != "" {
+		return unavailable("tokens/s", reason)
+	}
+	return available(float64(observation.Usage.OutputTokens-1)/(float64(windowNS)/float64(time.Second)), "tokens/s")
+}
+
+func decodeWindowNS(observation benchmark.RequestObservation, contentEventCount int) (int64, string) {
 	if !observation.Usage.Available {
 		return 0, "server token usage not available"
 	}
@@ -133,6 +140,19 @@ func decodeWindow(observation benchmark.RequestObservation, contentEventCount in
 	if contentEventCount < 2 {
 		return 0, "at least two content events are required"
 	}
+	if observation.FirstContentAfterNS != nil || observation.LastContentAfterNS != nil {
+		if observation.FirstContentAfterNS == nil || observation.LastContentAfterNS == nil {
+			return 0, "first and last content relative offsets must both be available"
+		}
+		if *observation.FirstContentAfterNS < 0 || *observation.LastContentAfterNS < 0 {
+			return 0, "content relative offsets must not be negative"
+		}
+		windowNS := *observation.LastContentAfterNS - *observation.FirstContentAfterNS
+		if windowNS <= 0 {
+			return 0, "content generation duration must be positive"
+		}
+		return windowNS, ""
+	}
 	if observation.FirstContentAt == nil || observation.LastContentAt == nil {
 		return 0, "first and last content timestamps are required"
 	}
@@ -140,7 +160,23 @@ func decodeWindow(observation benchmark.RequestObservation, contentEventCount in
 	if window <= 0 {
 		return 0, "content generation duration must be positive"
 	}
-	return window, ""
+	return window.Nanoseconds(), ""
+}
+
+func elapsedDurationNS(offsetNS *int64, start, end *time.Time, missingReason string) (int64, string) {
+	if offsetNS != nil {
+		if *offsetNS < 0 {
+			return 0, "relative offset must not be negative"
+		}
+		return *offsetNS, ""
+	}
+	if start == nil || end == nil {
+		return 0, missingReason
+	}
+	if end.Before(*start) {
+		return 0, "end timestamp precedes start timestamp"
+	}
+	return end.Sub(*start).Nanoseconds(), ""
 }
 
 func available(value float64, unit string) Scalar {

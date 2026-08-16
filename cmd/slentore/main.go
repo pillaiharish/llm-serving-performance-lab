@@ -146,6 +146,7 @@ func runBench(args []string, stdout, stderr io.Writer, lookupEnv func(string) (s
 	}
 	runner := benchmark.NewRunner(client)
 	request := benchmark.Request{
+		RunID:           runID,
 		RequestID:       requestID,
 		Model:           resolved.Endpoint.Model,
 		Prompt:          resolved.Request.Prompt,

@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,15 @@ import (
 
 func TestWriterCreatesCompleteRedactedRunDirectory(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	started := time.Date(2026, 8, 16, 12, 5, 1, 0, time.UTC)
+	headers := started.Add(40 * time.Millisecond)
+	firstByte := started.Add(45 * time.Millisecond)
+	firstContent := started.Add(100 * time.Millisecond)
+	completed := started.Add(200 * time.Millisecond)
+	headersAfterNS := (40 * time.Millisecond).Nanoseconds()
+	firstByteAfterNS := (45 * time.Millisecond).Nanoseconds()
+	firstContentAfterNS := (100 * time.Millisecond).Nanoseconds()
+	completedAfterNS := (200 * time.Millisecond).Nanoseconds()
 	metadata := RunMetadata{
 		SchemaVersion:            SchemaVersion,
 		RunID:                    "20260816T120501Z-a31f00ff",
@@ -28,11 +38,31 @@ func TestWriterCreatesCompleteRedactedRunDirectory(t *testing.T) {
 		PromptSHA256:             "safe-hash-only",
 	}
 	observation := benchmark.RequestObservation{
-		RequestID:         metadata.RequestID,
-		StreamEvents:      []benchmark.StreamEvent{},
+		RunID:                   metadata.RunID,
+		RequestID:               metadata.RequestID,
+		RequestStartedAt:        &started,
+		HeadersReceivedAt:       &headers,
+		HeadersAfterNS:          &headersAfterNS,
+		FirstByteAt:             &firstByte,
+		FirstByteAfterNS:        &firstByteAfterNS,
+		FirstStreamEventAt:      &firstContent,
+		FirstStreamEventAfterNS: &firstContentAfterNS,
+		FirstContentAt:          &firstContent,
+		FirstContentAfterNS:     &firstContentAfterNS,
+		LastContentAt:           &firstContent,
+		LastContentAfterNS:      &firstContentAfterNS,
+		CompletedAt:             &completed,
+		CompletedAfterNS:        &completedAfterNS,
+		StreamEvents: []benchmark.StreamEvent{{
+			Sequence:        1,
+			ReceivedAt:      firstContent,
+			ReceivedAfterNS: firstContentAfterNS,
+			HasContent:      true,
+			ContentBytes:    8,
+		}},
 		Usage:             benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable},
 		ResponseBodyBytes: 128,
-		Error:             "stream completed without non-empty generated content",
+		Error:             "unexpected EOF before [DONE]",
 	}
 	requestMetrics := metrics.Calculate(observation)
 
@@ -73,6 +103,22 @@ func TestWriterCreatesCompleteRedactedRunDirectory(t *testing.T) {
 			t.Fatalf("artifacts do not contain required value %q", required)
 		}
 	}
+	for _, required := range []string{"headers_after_ns", "first_byte_after_ns", "first_stream_event_after_ns", "first_content_after_ns", "last_content_after_ns", "completed_after_ns", "received_after_ns"} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("artifacts do not contain relative timing field %q", required)
+		}
+	}
+
+	var persistedObservation benchmark.RequestObservation
+	readArtifactJSON(t, filepath.Join(path, "observation.json"), &persistedObservation)
+	var persistedMetrics metrics.RequestMetrics
+	readArtifactJSON(t, filepath.Join(path, "metrics.json"), &persistedMetrics)
+	if persistedObservation.RunID != metadata.RunID || persistedObservation.RequestID != metadata.RequestID {
+		t.Fatalf("observation identity = (%q, %q)", persistedObservation.RunID, persistedObservation.RequestID)
+	}
+	if persistedMetrics.RunID != metadata.RunID || persistedMetrics.RequestID != metadata.RequestID {
+		t.Fatalf("metrics identity = (%q, %q)", persistedMetrics.RunID, persistedMetrics.RequestID)
+	}
 
 	if _, err := NewWriter(outputDirectory).Write(metadata, observation, requestMetrics); err == nil {
 		t.Fatal("duplicate run directory unexpectedly succeeded")
@@ -80,6 +126,17 @@ func TestWriterCreatesCompleteRedactedRunDirectory(t *testing.T) {
 	temporaryDirectories, err := filepath.Glob(filepath.Join(outputDirectory, "."+metadata.RunID+"-*"))
 	if err != nil || len(temporaryDirectories) != 0 {
 		t.Fatalf("temporary directories remain: %v, err = %v", temporaryDirectories, err)
+	}
+}
+
+func readArtifactJSON(t *testing.T, path string, target any) {
+	t.Helper()
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if err := json.Unmarshal(encoded, target); err != nil {
+		t.Fatalf("Unmarshal(%s): %v", path, err)
 	}
 }
 

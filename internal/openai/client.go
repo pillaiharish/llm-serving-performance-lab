@@ -81,9 +81,11 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 		GotFirstResponseByte: func() {
 			timestampMu.Lock()
 			defer timestampMu.Unlock()
-			if observation.FirstByteAt == nil {
+			if observation.FirstByteAt == nil && observation.RequestStartedAt != nil {
 				observed := c.now()
+				offset := observed.Sub(*observation.RequestStartedAt).Nanoseconds()
 				observation.FirstByteAt = &observed
+				observation.FirstByteAfterNS = &offset
 			}
 		},
 	}
@@ -94,6 +96,10 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 	defer func() {
 		completed := c.now()
 		observation.CompletedAt = &completed
+		if observation.RequestStartedAt != nil {
+			offset := completed.Sub(*observation.RequestStartedAt).Nanoseconds()
+			observation.CompletedAfterNS = &offset
+		}
 	}()
 
 	response, err := c.httpClient.Do(httpRequest)
@@ -102,6 +108,8 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 	}
 	headersReceived := c.now()
 	observation.HeadersReceivedAt = &headersReceived
+	headersOffset := headersReceived.Sub(*observation.RequestStartedAt).Nanoseconds()
+	observation.HeadersAfterNS = &headersOffset
 	observation.StatusCode = response.StatusCode
 
 	counter := &countingReader{reader: response.Body}
@@ -128,8 +136,7 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 
 		if data == "[DONE]" {
 			seenDone = true
-			appendStreamEvent(observation, received, false, 0)
-			return nil
+			return appendStreamEvent(observation, received, false, 0)
 		}
 
 		var chunk streamChunk
@@ -165,8 +172,7 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 			}
 		}
 
-		appendStreamEvent(observation, received, hasContent, contentBytes)
-		return nil
+		return appendStreamEvent(observation, received, hasContent, contentBytes)
 	})
 	if err != nil {
 		return err
@@ -177,25 +183,37 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 	return nil
 }
 
-func appendStreamEvent(observation *benchmark.RequestObservation, received time.Time, hasContent bool, contentBytes int) {
+func appendStreamEvent(observation *benchmark.RequestObservation, received time.Time, hasContent bool, contentBytes int) error {
+	if observation.RequestStartedAt == nil {
+		return fmt.Errorf("request start timestamp is required before stream events")
+	}
+	receivedAfterNS := received.Sub(*observation.RequestStartedAt).Nanoseconds()
 	if observation.FirstStreamEventAt == nil {
 		first := received
+		firstOffset := receivedAfterNS
 		observation.FirstStreamEventAt = &first
+		observation.FirstStreamEventAfterNS = &firstOffset
 	}
 	if hasContent {
 		if observation.FirstContentAt == nil {
 			first := received
+			firstOffset := receivedAfterNS
 			observation.FirstContentAt = &first
+			observation.FirstContentAfterNS = &firstOffset
 		}
 		last := received
+		lastOffset := receivedAfterNS
 		observation.LastContentAt = &last
+		observation.LastContentAfterNS = &lastOffset
 	}
 	observation.StreamEvents = append(observation.StreamEvents, benchmark.StreamEvent{
-		Sequence:     len(observation.StreamEvents) + 1,
-		ReceivedAt:   received,
-		HasContent:   hasContent,
-		ContentBytes: contentBytes,
+		Sequence:        len(observation.StreamEvents) + 1,
+		ReceivedAt:      received,
+		ReceivedAfterNS: receivedAfterNS,
+		HasContent:      hasContent,
+		ContentBytes:    contentBytes,
 	})
+	return nil
 }
 
 type countingReader struct {
