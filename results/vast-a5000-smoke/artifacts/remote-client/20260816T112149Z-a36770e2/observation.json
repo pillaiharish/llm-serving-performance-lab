@@ -1,0 +1,344 @@
+{
+  "run_id": "20260816T112149Z-a36770e2",
+  "request_id": "req-000001",
+  "request_started_at": "2026-08-16T16:51:49.081296+05:30",
+  "headers_received_at": "2026-08-16T16:51:49.557312+05:30",
+  "headers_after_ns": 476016417,
+  "first_byte_at": "2026-08-16T16:51:49.557135+05:30",
+  "first_byte_after_ns": 475839333,
+  "first_stream_event_at": "2026-08-16T16:51:49.678506+05:30",
+  "first_stream_event_after_ns": 597210792,
+  "first_content_at": "2026-08-16T16:51:49.678804+05:30",
+  "first_content_after_ns": 597509583,
+  "last_content_at": "2026-08-16T16:51:50.431466+05:30",
+  "last_content_after_ns": 1350172417,
+  "completed_at": "2026-08-16T16:51:50.541043+05:30",
+  "completed_after_ns": 1459749625,
+  "stream_events": [
+    {
+      "sequence": 1,
+      "received_at": "2026-08-16T16:51:49.678506+05:30",
+      "received_after_ns": 597210792,
+      "has_content": false,
+      "content_bytes": 0
+    },
+    {
+      "sequence": 2,
+      "received_at": "2026-08-16T16:51:49.678804+05:30",
+      "received_after_ns": 597509583,
+      "has_content": true,
+      "content_bytes": 2
+    },
+    {
+      "sequence": 3,
+      "received_at": "2026-08-16T16:51:49.678823+05:30",
+      "received_after_ns": 597527917,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 4,
+      "received_at": "2026-08-16T16:51:49.678844+05:30",
+      "received_after_ns": 597548958,
+      "has_content": true,
+      "content_bytes": 3
+    },
+    {
+      "sequence": 5,
+      "received_at": "2026-08-16T16:51:49.763135+05:30",
+      "received_after_ns": 681839792,
+      "has_content": true,
+      "content_bytes": 2
+    },
+    {
+      "sequence": 6,
+      "received_at": "2026-08-16T16:51:49.763212+05:30",
+      "received_after_ns": 681917208,
+      "has_content": true,
+      "content_bytes": 7
+    },
+    {
+      "sequence": 7,
+      "received_at": "2026-08-16T16:51:49.763226+05:30",
+      "received_after_ns": 681931042,
+      "has_content": true,
+      "content_bytes": 13
+    },
+    {
+      "sequence": 8,
+      "received_at": "2026-08-16T16:51:49.763237+05:30",
+      "received_after_ns": 681942458,
+      "has_content": true,
+      "content_bytes": 10
+    },
+    {
+      "sequence": 9,
+      "received_at": "2026-08-16T16:51:49.763247+05:30",
+      "received_after_ns": 681952583,
+      "has_content": true,
+      "content_bytes": 5
+    },
+    {
+      "sequence": 10,
+      "received_at": "2026-08-16T16:51:49.828973+05:30",
+      "received_after_ns": 747678292,
+      "has_content": true,
+      "content_bytes": 7
+    },
+    {
+      "sequence": 11,
+      "received_at": "2026-08-16T16:51:49.829022+05:30",
+      "received_after_ns": 747727542,
+      "has_content": true,
+      "content_bytes": 4
+    },
+    {
+      "sequence": 12,
+      "received_at": "2026-08-16T16:51:49.829035+05:30",
+      "received_after_ns": 747739917,
+      "has_content": true,
+      "content_bytes": 4
+    },
+    {
+      "sequence": 13,
+      "received_at": "2026-08-16T16:51:49.829045+05:30",
+      "received_after_ns": 747750125,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 14,
+      "received_at": "2026-08-16T16:51:49.928635+05:30",
+      "received_after_ns": 847340625,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 15,
+      "received_at": "2026-08-16T16:51:49.928684+05:30",
+      "received_after_ns": 847390042,
+      "has_content": true,
+      "content_bytes": 10
+    },
+    {
+      "sequence": 16,
+      "received_at": "2026-08-16T16:51:49.928696+05:30",
+      "received_after_ns": 847401875,
+      "has_content": true,
+      "content_bytes": 7
+    },
+    {
+      "sequence": 17,
+      "received_at": "2026-08-16T16:51:49.928707+05:30",
+      "received_after_ns": 847412208,
+      "has_content": true,
+      "content_bytes": 9
+    },
+    {
+      "sequence": 18,
+      "received_at": "2026-08-16T16:51:49.928717+05:30",
+      "received_after_ns": 847422250,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 19,
+      "received_at": "2026-08-16T16:51:49.963801+05:30",
+      "received_after_ns": 882506917,
+      "has_content": true,
+      "content_bytes": 11
+    },
+    {
+      "sequence": 20,
+      "received_at": "2026-08-16T16:51:49.96387+05:30",
+      "received_after_ns": 882575917,
+      "has_content": true,
+      "content_bytes": 3
+    },
+    {
+      "sequence": 21,
+      "received_at": "2026-08-16T16:51:50.047124+05:30",
+      "received_after_ns": 965830167,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 22,
+      "received_at": "2026-08-16T16:51:50.047168+05:30",
+      "received_after_ns": 965874083,
+      "has_content": true,
+      "content_bytes": 10
+    },
+    {
+      "sequence": 23,
+      "received_at": "2026-08-16T16:51:50.04718+05:30",
+      "received_after_ns": 965886250,
+      "has_content": true,
+      "content_bytes": 13
+    },
+    {
+      "sequence": 24,
+      "received_at": "2026-08-16T16:51:50.047191+05:30",
+      "received_after_ns": 965896833,
+      "has_content": true,
+      "content_bytes": 1
+    },
+    {
+      "sequence": 25,
+      "received_at": "2026-08-16T16:51:50.149162+05:30",
+      "received_after_ns": 1067868417,
+      "has_content": true,
+      "content_bytes": 3
+    },
+    {
+      "sequence": 26,
+      "received_at": "2026-08-16T16:51:50.149213+05:30",
+      "received_after_ns": 1067918667,
+      "has_content": true,
+      "content_bytes": 3
+    },
+    {
+      "sequence": 27,
+      "received_at": "2026-08-16T16:51:50.149226+05:30",
+      "received_after_ns": 1067931667,
+      "has_content": true,
+      "content_bytes": 5
+    },
+    {
+      "sequence": 28,
+      "received_at": "2026-08-16T16:51:50.149237+05:30",
+      "received_after_ns": 1067942792,
+      "has_content": true,
+      "content_bytes": 5
+    },
+    {
+      "sequence": 29,
+      "received_at": "2026-08-16T16:51:50.149247+05:30",
+      "received_after_ns": 1067952750,
+      "has_content": true,
+      "content_bytes": 7
+    },
+    {
+      "sequence": 30,
+      "received_at": "2026-08-16T16:51:50.155942+05:30",
+      "received_after_ns": 1074648458,
+      "has_content": true,
+      "content_bytes": 5
+    },
+    {
+      "sequence": 31,
+      "received_at": "2026-08-16T16:51:50.247386+05:30",
+      "received_after_ns": 1166092458,
+      "has_content": true,
+      "content_bytes": 1
+    },
+    {
+      "sequence": 32,
+      "received_at": "2026-08-16T16:51:50.247439+05:30",
+      "received_after_ns": 1166144875,
+      "has_content": true,
+      "content_bytes": 4
+    },
+    {
+      "sequence": 33,
+      "received_at": "2026-08-16T16:51:50.247451+05:30",
+      "received_after_ns": 1166157250,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 34,
+      "received_at": "2026-08-16T16:51:50.247462+05:30",
+      "received_after_ns": 1166167750,
+      "has_content": true,
+      "content_bytes": 4
+    },
+    {
+      "sequence": 35,
+      "received_at": "2026-08-16T16:51:50.360003+05:30",
+      "received_after_ns": 1278709375,
+      "has_content": true,
+      "content_bytes": 14
+    },
+    {
+      "sequence": 36,
+      "received_at": "2026-08-16T16:51:50.360084+05:30",
+      "received_after_ns": 1278790750,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 37,
+      "received_at": "2026-08-16T16:51:50.360101+05:30",
+      "received_after_ns": 1278807250,
+      "has_content": true,
+      "content_bytes": 3
+    },
+    {
+      "sequence": 38,
+      "received_at": "2026-08-16T16:51:50.360122+05:30",
+      "received_after_ns": 1278828875,
+      "has_content": true,
+      "content_bytes": 10
+    },
+    {
+      "sequence": 39,
+      "received_at": "2026-08-16T16:51:50.360133+05:30",
+      "received_after_ns": 1278839500,
+      "has_content": true,
+      "content_bytes": 6
+    },
+    {
+      "sequence": 40,
+      "received_at": "2026-08-16T16:51:50.43142+05:30",
+      "received_after_ns": 1350126958,
+      "has_content": true,
+      "content_bytes": 12
+    },
+    {
+      "sequence": 41,
+      "received_at": "2026-08-16T16:51:50.431456+05:30",
+      "received_after_ns": 1350162208,
+      "has_content": true,
+      "content_bytes": 9
+    },
+    {
+      "sequence": 42,
+      "received_at": "2026-08-16T16:51:50.431466+05:30",
+      "received_after_ns": 1350172417,
+      "has_content": true,
+      "content_bytes": 1
+    },
+    {
+      "sequence": 43,
+      "received_at": "2026-08-16T16:51:50.540932+05:30",
+      "received_after_ns": 1459638667,
+      "has_content": false,
+      "content_bytes": 0
+    },
+    {
+      "sequence": 44,
+      "received_at": "2026-08-16T16:51:50.54101+05:30",
+      "received_after_ns": 1459716500,
+      "has_content": false,
+      "content_bytes": 0
+    },
+    {
+      "sequence": 45,
+      "received_at": "2026-08-16T16:51:50.541039+05:30",
+      "received_after_ns": 1459746000,
+      "has_content": false,
+      "content_bytes": 0
+    }
+  ],
+  "usage": {
+    "input_tokens": 21,
+    "output_tokens": 42,
+    "total_tokens": 63,
+    "source": "server_usage",
+    "available": true
+  },
+  "response_body_bytes": 10173,
+  "status_code": 200,
+  "finish_reason": "stop"
+}

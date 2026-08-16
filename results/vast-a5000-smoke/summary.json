@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "artifact_type": "slentore_session_summary",
+  "experiment": {
+    "provider": "Vast.ai",
+    "date_utc": "2026-08-16",
+    "scope": "single-request C=1 deployment and benchmark validation",
+    "model": "Qwen/Qwen3.5-4B"
+  },
+  "deployment": {
+    "gpu": "NVIDIA RTX A5000",
+    "gpu_count": 1,
+    "vram_mib": 24564,
+    "driver_version": "590.48.01",
+    "cuda_reported_by_nvidia_smi": "13.1",
+    "vllm_version": "0.26.0",
+    "dtype": "bfloat16",
+    "tensor_parallel_size": 1,
+    "max_model_len": 4096,
+    "gpu_memory_utilization": 0.85,
+    "checkpoint_size_gib_reported": 8.68,
+    "model_loading_memory_gib_reported": 8.61,
+    "vllm_listen_host": "127.0.0.1",
+    "vllm_internal_port": 18000,
+    "template_name": "slentore-vllm-qwen35-4b",
+    "container_storage_gb_approximate": 50,
+    "instance_market": "on-demand",
+    "cloud_tier": "secure cloud"
+  },
+  "workload": {
+    "execution": "sequential",
+    "concurrency": 1,
+    "prompt_bytes": 40,
+    "prompt_sha256": "beda0437d415364fecabbee017ddcc41db98ea31a005d71951abc9f09b9529e0",
+    "requested_max_output_tokens": 64,
+    "temperature": 0,
+    "server_reported_input_tokens": 21,
+    "server_reported_output_tokens": 42,
+    "server_reported_total_tokens": 63,
+    "finish_reason": "stop"
+  },
+  "profiles": {
+    "remote_client": {
+      "label": "remote-client / SSH-tunnel / sequential C=1 smoke baseline",
+      "path": "Mac -> Internet -> SSH tunnel -> Vast instance -> vLLM",
+      "source": "exact Slentore schema-1 artifacts",
+      "raw_artifacts_available": true,
+      "runs": [
+        {
+          "run_number": 1,
+          "run_id": "20260816T112142Z-6e3d2bea",
+          "artifact_directory": "artifacts/remote-client/20260816T112142Z-6e3d2bea",
+          "headers_ms": 546.273416,
+          "ttfb_ms": 546.14025,
+          "ttft_ms": 567.745,
+          "ttlt_ms": 1451.674708,
+          "e2e_ms": 1451.718791,
+          "tpot_ms_per_token": 21.55926117073171,
+          "icl_mean_ms": 22.098242699999993
+        },
+        {
+          "run_number": 2,
+          "run_id": "20260816T112145Z-b3e8da2e",
+          "artifact_directory": "artifacts/remote-client/20260816T112145Z-b3e8da2e",
+          "headers_ms": 550.878125,
+          "ttfb_ms": 550.662959,
+          "ttft_ms": 551.191584,
+          "ttlt_ms": 1292.932959,
+          "e2e_ms": 1292.981,
+          "tpot_ms_per_token": 18.091253048780487,
+          "icl_mean_ms": 18.543534375
+        },
+        {
+          "run_number": 3,
+          "run_id": "20260816T112149Z-a36770e2",
+          "artifact_directory": "artifacts/remote-client/20260816T112149Z-a36770e2",
+          "headers_ms": 476.016417,
+          "ttfb_ms": 475.839333,
+          "ttft_ms": 597.509583,
+          "ttlt_ms": 1350.172417,
+          "e2e_ms": 1459.749625,
+          "tpot_ms_per_token": 18.357630097560975,
+          "icl_mean_ms": 18.816570849999998
+        },
+        {
+          "run_number": 4,
+          "run_id": "20260816T112152Z-5e322c71",
+          "artifact_directory": "artifacts/remote-client/20260816T112152Z-5e322c71",
+          "headers_ms": 407.56575,
+          "ttfb_ms": 407.408292,
+          "ttft_ms": 509.630459,
+          "ttlt_ms": 1343.492875,
+          "e2e_ms": 1343.54825,
+          "tpot_ms_per_token": 20.338107707317075,
+          "icl_mean_ms": 20.8465604
+        },
+        {
+          "run_number": 5,
+          "run_id": "20260816T112155Z-cc18d05d",
+          "artifact_directory": "artifacts/remote-client/20260816T112155Z-cc18d05d",
+          "headers_ms": 408.073,
+          "ttfb_ms": 407.906291,
+          "ttft_ms": 525.396208,
+          "ttlt_ms": 1310.695916,
+          "e2e_ms": 1310.739708,
+          "tpot_ms_per_token": 19.153651414634147,
+          "icl_mean_ms": 19.6324927
+        }
+      ],
+      "medians": {
+        "headers_ms": 476.016417,
+        "ttfb_ms": 475.839333,
+        "ttft_ms": 551.191584,
+        "ttlt_ms": 1343.492875,
+        "e2e_ms": 1343.54825,
+        "tpot_ms_per_token": 19.153651414634147,
+        "icl_mean_ms": 19.6324927,
+        "decode_tokens_per_second_derived_from_median_tpot": 52.209366159601316
+      }
+    },
+    "server_local": {
+      "label": "server-local / loopback / sequential C=1 smoke baseline",
+      "path": "Slentore on Vast instance -> vLLM loopback",
+      "source": "captured benchmark terminal measurements",
+      "raw_artifacts_available": false,
+      "runs": [
+        {
+          "run_number": 1,
+          "headers_ms": 4.735,
+          "ttfb_ms": 4.681,
+          "ttft_ms": 85.386,
+          "ttlt_ms": 885.447,
+          "e2e_ms": 907.522,
+          "tpot_ms_per_token": 19.514,
+          "icl_mean_ms": 20.002
+        },
+        {
+          "run_number": 2,
+          "headers_ms": 4.908,
+          "ttfb_ms": 4.828,
+          "ttft_ms": 77.145,
+          "ttlt_ms": 868.932,
+          "e2e_ms": 897.338,
+          "tpot_ms_per_token": 19.312,
+          "icl_mean_ms": 19.795
+        },
+        {
+          "run_number": 3,
+          "headers_ms": 3.903,
+          "ttfb_ms": 3.769,
+          "ttft_ms": 75.321,
+          "ttlt_ms": 868.099,
+          "e2e_ms": 901.907,
+          "tpot_ms_per_token": 19.336,
+          "icl_mean_ms": 19.819
+        },
+        {
+          "run_number": 4,
+          "headers_ms": 4.659,
+          "ttfb_ms": 4.53,
+          "ttft_ms": 73.571,
+          "ttlt_ms": 855.887,
+          "e2e_ms": 888.608,
+          "tpot_ms_per_token": 19.081,
+          "icl_mean_ms": 19.558
+        },
+        {
+          "run_number": 5,
+          "headers_ms": 4.867,
+          "ttfb_ms": 4.657,
+          "ttft_ms": 75.524,
+          "ttlt_ms": 863.025,
+          "e2e_ms": 894.488,
+          "tpot_ms_per_token": 19.207,
+          "icl_mean_ms": 19.688
+        }
+      ],
+      "medians": {
+        "headers_ms": 4.735,
+        "ttfb_ms": 4.657,
+        "ttft_ms": 75.524,
+        "ttlt_ms": 868.099,
+        "e2e_ms": 897.338,
+        "tpot_ms_per_token": 19.312,
+        "icl_mean_ms": 19.795,
+        "decode_tokens_per_second_derived_from_median_tpot": 51.78127589063898
+      }
+    }
+  },
+  "notable_validations": {
+    "first_successful_remote_request": {
+      "run_id": "20260816T110915Z-aa4dadf4",
+      "artifact_directory": "artifacts/remote-client/20260816T110915Z-aa4dadf4",
+      "status_code": 200,
+      "usage_available": true,
+      "input_tokens": 21,
+      "output_tokens": 42,
+      "total_tokens": 63,
+      "finish_reason": "stop",
+      "response_body_bytes": 10173,
+      "headers_ms": 469.052042,
+      "ttfb_ms": 468.924042,
+      "ttft_ms": 643.485,
+      "ttlt_ms": 1676.751208,
+      "e2e_ms": 1695.825042,
+      "tpot_ms_per_token": 25.201614829268294,
+      "icl_mean_ms": 25.8316552,
+      "itl_available": false
+    },
+    "connection_refused_partial_evidence": {
+      "run_id": "20260816T105853Z-c8cfb842",
+      "artifact_directory": "artifacts/remote-client/20260816T105853Z-c8cfb842",
+      "error_category": "connection_refused",
+      "status_code_available": false,
+      "usage_available": false,
+      "headers_available": false,
+      "ttfb_available": false,
+      "ttft_available": false,
+      "ttlt_available": false,
+      "e2e_available": true,
+      "e2e_ms": 3.936042,
+      "partial_artifacts_written": true
+    }
+  },
+  "caveats": [
+    "This is a sequential single-request C=1 smoke baseline, not a capacity or concurrency result.",
+    "Remote-client timings include the Mac, Internet path, SSH tunnel, and server; they are not pure GPU measurements.",
+    "Server-local timings more closely isolate serving behavior but do not measure GPU capacity.",
+    "The remote versus local latency difference applies only to this experiment path and is not a universal network-latency claim.",
+    "Reciprocal TPOT token rates are derived descriptive values, not throughput or capacity claims.",
+    "Inter-chunk latency is not true inter-token latency because SSE chunks need not map one-to-one to tokenizer tokens.",
+    "Exact server-local Slentore artifacts were unavailable after the Vast instance was terminated; only captured measurements are preserved, and no raw observations were reconstructed."
+  ]
+}

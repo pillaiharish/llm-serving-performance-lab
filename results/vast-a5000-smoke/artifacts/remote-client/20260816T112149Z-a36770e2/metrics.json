@@ -1,0 +1,109 @@
+{
+  "run_id": "20260816T112149Z-a36770e2",
+  "request_id": "req-000001",
+  "time_to_headers": {
+    "available": true,
+    "value": 476.016417,
+    "unit": "ms"
+  },
+  "ttfb": {
+    "available": true,
+    "value": 475.839333,
+    "unit": "ms"
+  },
+  "ttft": {
+    "available": true,
+    "value": 597.509583,
+    "unit": "ms"
+  },
+  "ttlt": {
+    "available": true,
+    "value": 1350.172417,
+    "unit": "ms"
+  },
+  "e2e": {
+    "available": true,
+    "value": 1459.749625,
+    "unit": "ms"
+  },
+  "tpot": {
+    "available": true,
+    "value": 18.357630097560975,
+    "unit": "ms/token"
+  },
+  "output_tokens_per_second": {
+    "available": true,
+    "value": 28.77205739991199,
+    "unit": "tokens/s"
+  },
+  "decode_tokens_per_second": {
+    "available": true,
+    "value": 54.47326232664758,
+    "unit": "tokens/s"
+  },
+  "inter_chunk_latency": {
+    "available": true,
+    "count": 40,
+    "mean_ms": 18.816570849999998,
+    "min_ms": 0.009958,
+    "max_ms": 112.541625,
+    "values_ms": [
+      0.018334,
+      0.021041,
+      84.290834,
+      0.077416,
+      0.013834,
+      0.011416,
+      0.010125,
+      65.725709,
+      0.04925,
+      0.012375,
+      0.010208,
+      99.5905,
+      0.049417,
+      0.011833,
+      0.010333,
+      0.010042,
+      35.084667,
+      0.069,
+      83.25425,
+      0.043916,
+      0.012167,
+      0.010583,
+      101.971584,
+      0.05025,
+      0.013,
+      0.011125,
+      0.009958,
+      6.695708,
+      91.444,
+      0.052417,
+      0.012375,
+      0.0105,
+      112.541625,
+      0.081375,
+      0.0165,
+      0.021625,
+      0.010625,
+      71.287458,
+      0.03525,
+      0.010209
+    ]
+  },
+  "itl": {
+    "available": false,
+    "source": "not_available",
+    "reason": "OpenAI-compatible SSE chunks are not guaranteed to map 1:1 to tokenizer tokens"
+  },
+  "token_usage": {
+    "input_tokens": 21,
+    "output_tokens": 42,
+    "total_tokens": 63,
+    "source": "server_usage",
+    "available": true
+  },
+  "stream_event_count": 45,
+  "content_event_count": 41,
+  "response_bytes": 255,
+  "response_body_bytes": 10173
+}
