@@ -1,0 +1,17 @@
+version: 1
+
+endpoint:
+  base_url: "http://127.0.0.1:18000/v1"
+  api_key_env: "VAST_VLLM_TOKEN"
+  model: "Qwen/Qwen3.5-4B"
+
+request:
+  prompt: "Explain KV cache in two short sentences."
+  max_output_tokens: 64
+  temperature: 0
+
+runtime:
+  timeout: "120s"
+
+capture:
+  output_dir: "runs/vast-a5000-smoke"
