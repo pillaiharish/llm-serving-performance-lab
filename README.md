@@ -5,10 +5,10 @@ serving performance from raw client-side timing evidence.
 
 Slentore implements a production-quality streaming OpenAI-compatible Chat
 Completions request primitive and a fixed-concurrency, closed-loop coordinator
-around it. One invocation attempts a configured number of requests at one
-configured concurrency level. Request-rate scheduling, warmup, concurrency
-sweeps, percentile aggregation, deployment, and observability remain outside
-this version.
+around it. One invocation runs an optional request-count warmup followed by a
+measured request cohort at one configured concurrency level. Request-rate
+scheduling, duration-based warmup, concurrency sweeps, percentile aggregation,
+deployment, and observability remain outside this version.
 
 The original local single-GPU learning series remains unchanged under
 [`experiments/local-single-gpu-v0/`](experiments/local-single-gpu-v0/).
@@ -44,6 +44,7 @@ request:
 
 runtime:
   timeout: "120s"
+  drain_timeout: "120s"
 
 capture:
   output_dir: "runs"
@@ -51,6 +52,7 @@ capture:
 benchmark:
   concurrency: 1
   requests: 1
+  warmup_requests: 0
   safety:
     max_concurrency: 256
     max_requests: 10000
@@ -67,16 +69,19 @@ built-in defaults < YAML < explicitly supplied CLI flags
 ```
 
 The built-in defaults are 64 maximum output tokens, temperature 0, a 120
-second per-request timeout, the `runs` output directory, concurrency 1, one
-request, maximum concurrency 256, and maximum requests 10,000. Base URL,
-model, and prompt must be supplied by YAML and/or flags.
+second per-request timeout, a separate 120 second drain timeout, the `runs`
+output directory, concurrency 1, zero warmup requests, one measured request,
+maximum concurrency 256, and maximum requests 10,000. Base URL, model, and
+prompt must be supplied by YAML and/or flags.
 
-Requested concurrency and request count must be positive and must not exceed
-their configured safety ceilings. Slentore rejects an over-limit run; it never
-silently clamps it. `--max-concurrency` and `--max-requests` can explicitly
-raise the ceilings when a larger run is intentional. Admission records the
-client's CPU count, `GOMAXPROCS`, Go version, operating system, and architecture
-as diagnostics, but does not infer a capacity limit from them.
+Requested concurrency and measured request count must be positive; warmup may
+be zero. Warmup and measured counts are each checked independently against
+`max_requests`, and concurrency is checked against `max_concurrency`. Slentore
+rejects an over-limit run and never silently clamps it. Explicitly raising
+`--max-concurrency` or `--max-requests` permits a larger intentional run.
+Admission records the client's CPU count, `GOMAXPROCS`, Go version, operating
+system, and architecture as diagnostics, but does not infer a capacity limit
+from them.
 
 Unknown YAML fields, multiple YAML documents, unsupported versions, invalid
 durations, unsafe URLs, and missing required values are rejected before
@@ -118,9 +123,11 @@ build/slentore bench \
   --max-output-tokens 64 \
   --temperature 0 \
   --timeout 120s \
+  --drain-timeout 120s \
   --output-dir runs \
   --api-key-env "" \
   --concurrency 4 \
+  --warmup-requests 4 \
   --requests 16 \
   --max-concurrency 256 \
   --max-requests 10000
@@ -140,11 +147,33 @@ Slentore sends:
 ```
 
 Generated content is parsed for byte counts and timing but is not streamed to
-the terminal or accumulated in memory. With the default `concurrency: 1` and
-`requests: 1`, behavior remains compatible with the original single-request
-invocation and its detailed scalar terminal summary.
+the terminal or accumulated in memory. With the default zero warmup,
+`concurrency: 1`, and `requests: 1`, behavior remains compatible with the
+original single-request invocation and its detailed scalar terminal summary.
 
-## Closed-loop concurrency
+## Benchmark lifecycle and closed-loop concurrency
+
+Each admitted invocation follows one centralized lifecycle:
+
+```text
+SETUP → WARMUP → MEASUREMENT → STOP ADMISSION → DRAIN → ARTIFACTS
+```
+
+Setup covers lifecycle initialization after configuration, secret, admission,
+run-ID, shared-client, and OpenAI-client preflight. These preflight operations
+are outside lifecycle timing; a preflight failure creates no artifacts.
+
+Warmup always has an explicit phase. With `warmup_requests: 0` it is recorded
+as skipped. Otherwise, warmup uses the same request payload, endpoint,
+per-request timeout, requested concurrency, shared HTTP client and transport,
+stream parser, and `Runner.RunRequest` path as measurement. Its IDs are
+`warmup-000001` through `warmup-N`. Every admitted warmup result drains before
+measurement begins. Warmup failures are retained and make the overall run
+fail, but do not suppress measurement unless the parent context is canceled.
+
+Slentore samples a fresh measurement start immediately before measured workers
+start, so measurement elapsed time excludes setup and warmup. Measured IDs
+remain `req-000001` through `req-N`.
 
 For `N` requested calls at concurrency `C`, Slentore starts exactly
 `min(C, N)` long-lived workers. Each worker claims the next request ID, executes
@@ -153,25 +182,41 @@ There is no pacing or target QPS: offered load is closed-loop and depends on
 request completion. IDs are assigned as `req-000001` through `req-N`; the
 completion-order result list is independent of ID order.
 
-Every claimed request gets its own child context with the configured timeout.
-A request failure is preserved in that request's observation and does not stop
-later claims. SIGINT or SIGTERM stops new claims, cancels active requests,
-waits for workers and their results to drain, then writes the collected subset.
-There is no separate run-wide timeout.
+Every claimed request gets its own child context with `runtime.timeout`. A
+request failure is preserved in that request's observation and does not stop
+later claims. The successful claim of measured request N is the exact stop-
+admission boundary. No later request can be claimed; Slentore records the
+boundary and starts the independent `runtime.drain_timeout` while active calls
+finish normally.
 
-One `http.Client` and one cloned standard transport are shared by all workers
-for the run. The transport's per-host connection and idle-connection limits
-are set to the effective worker count, retaining the standard dial and TLS
-behavior. Idle connections are closed after the run. Workers perform no file
-I/O and never send SSE or token events through coordinator channels; the
-coordinator collects one completed result per attempted request in memory.
-The default 10,000-request ceiling bounds that collection unless explicitly
-raised.
+If drain expires, outstanding request contexts are canceled with a distinct
+drain-timeout cause, workers and result channels are fully drained, and partial
+evidence is written. A parent cancellation during warmup skips measurement; a
+parent cancellation during measurement stops new claims; during drain it
+cancels active work immediately. Per-request timeout, parent cancellation, and
+drain timeout remain distinct request outcomes. There is no run-wide timeout.
 
-The terminal summary always reports requested, attempted, completed,
-successful, and failed counts, requested concurrency, effective workers,
-maximum observed active calls, elapsed time, and the artifact path. Detailed
-per-request scalar output is retained only when `N=1`.
+The phase worker counts and transport limit are:
+
+```text
+warmup_workers   = warmup_requests == 0 ? 0 : min(C, warmup_requests)
+measured_workers = min(C, requests)
+transport_limit  = max(warmup_workers, measured_workers)
+```
+
+One `http.Client` and one cloned standard transport are shared across both
+phases. The transport's per-host connection and idle-connection limits use the
+transport limit above while retaining standard dial and TLS behavior. Idle
+connections are closed after the run. Workers perform no file I/O and never
+send SSE or token events through coordinator channels; the coordinator
+collects one completed result per attempted request in memory. The default
+10,000-request ceiling bounds each cohort unless explicitly raised.
+
+The terminal summary reports separate warmup and measurement requested,
+attempted, successful, and failed counts; requested concurrency; both phase
+worker and maximum-active counts; drain state; lifecycle and measurement
+elapsed time; and the artifact path. Detailed scalar output is retained only
+for one successfully collected measured request.
 
 ## Deterministic local fake server
 
@@ -358,53 +403,64 @@ SSE framing, usage events, and `[DONE]`.
 
 ## Artifacts and failure behavior
 
-After measurement, Slentore creates:
+After drain, Slentore creates:
 
 ```text
 runs/
 └── 20260816T120501Z-a31f00ff/
     ├── run.json
-    └── requests/
-        ├── req-000001/
-        │   ├── observation.json
-        │   └── metrics.json
-        └── req-000002/
-            ├── observation.json
-            └── metrics.json
+    ├── warmup/
+    │   └── requests/
+    │       └── warmup-000001/
+    │           ├── observation.json
+    │           └── metrics.json
+    └── measured/
+        └── requests/
+            ├── req-000001/
+            │   ├── observation.json
+            │   └── metrics.json
+            └── req-000002/
+                ├── observation.json
+                └── metrics.json
 ```
 
-- `run.json` is artifact schema version 2. It contains the run ID, Slentore
-  version, model, safe base URL, requested output limit, temperature,
-  per-request timeout, prompt byte length and SHA-256, requested/attempted/
-  completed/successful/failed counts, concurrency and worker evidence, safety
-  ceilings, run wall times and monotonic-derived elapsed nanoseconds, run
-  status/error, and portable client diagnostics. It has no singular request
-  ID.
+- Both request roots are always created, including an empty `warmup/requests`
+  directory when warmup is skipped.
+- `run.json` is artifact schema version 3. It retains safe workload, build,
+  endpoint, prompt hash/length, safety, and client diagnostics. It adds ordered
+  lifecycle transitions; explicit stop-admission wall/relative evidence;
+  separate phase status, timing, counts, concurrency, and mutually exclusive
+  outcome totals; drain timing, timeout/cancellation state and affected IDs;
+  and the overall completed, failed, or canceled status and error.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
   request-relative nanosecond offsets, event evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
 - `metrics.json` contains `(run_id, request_id)` and values derived from that
   observation.
 
-The writer sorts a copy of completed results by request sequence, validates
-run/request identities and duplicates, stages the complete tree, and atomically
-renames it into place only after every file has been written. Metric derivation
-and filesystem work happen after the coordinator's measured interval.
-Historical committed schema-1 validation artifacts remain unchanged.
+The writer keeps warmup and measured cohorts separate, sorts a copy of each by
+request sequence, validates phase-specific identities, ranges, duplicates,
+counts and outcome totals, stages the complete tree, and atomically renames it
+only after every file has been written. Metric derivation and filesystem work
+happen after drain. Warmup observations are never mixed into the measured
+cohort. Historical committed schema-1 and previously generated schema-2
+evidence remain unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
 
 Configuration, URL, secret, admission, and client-construction errors occur
-before measurement, create no run directory, and exit with status 2. Once
-measurement starts, DNS/connect errors, per-request timeouts, non-2xx
-responses, malformed streams, cancellation, and a clean stream with no
-generated content preserve partial observation and metric artifacts before
-exiting with status 1. Except for parent cancellation, measured request
-failures do not stop remaining IDs from being attempted. Artifact failures and
-coordinator failures also exit 1. Missing usage alone is not a request failure;
-usage-dependent metrics are simply unavailable. Exit status 0 requires all
-`N` requests to succeed and the complete artifact tree to be written.
+before lifecycle timing, create no run directory, and exit with status 2. Once
+the lifecycle starts, DNS/connect errors, per-request timeouts, non-2xx
+responses, malformed streams, cancellation, drain timeout, and a clean stream
+with no generated content preserve available phase-scoped observation and
+metric artifacts before exiting with status 1. Request failures do not stop
+later IDs in their phase, and warmup failures do not suppress measurement.
+Parent cancellation stops admission according to the lifecycle rules above.
+Artifact and coordinator failures also exit 1. Missing usage alone is not a
+request failure; usage-dependent metrics are simply unavailable. Exit status 0
+requires every warmup and measured request to succeed, no cancellation or
+drain timeout, and the complete artifact tree to be written.
 
 ## Validate
 
@@ -423,11 +479,12 @@ go test -race ./...
 
 ## Current scope
 
-This version runs one fixed concurrency level with one finite request count. It
-contains no QPS scheduler, warmup lifecycle, concurrency sweep, run-level
-percentile or throughput aggregation, tokenizer workload generator, database,
-GPU discovery, deployment automation, or observability integration. The
-coordinator reuses the existing `Runner.RunRequest` primitive without changing
-how an individual request is observed or how its metrics are calculated. The
-fake server provides controlled HTTP/SSE validation; it does not simulate GPU,
-model, tokenizer, or vLLM capacity behavior.
+This version runs one optional request-count warmup and one finite measured
+cohort at a single fixed concurrency level. It contains no QPS scheduler,
+warmup-duration control, concurrency sweep, run-level percentile or throughput
+aggregation, tokenizer workload generator, database, GPU discovery, deployment
+automation, or observability integration. The lifecycle coordinator reuses the
+existing `Runner.RunRequest` primitive without changing how an individual
+request is observed or how its metrics are calculated. The fake server provides
+controlled HTTP/SSE validation; it does not simulate GPU, model, tokenizer, or
+vLLM capacity behavior.

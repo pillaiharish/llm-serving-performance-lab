@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,16 +14,14 @@ import (
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 )
 
-func TestWriterCreatesAtomicRedactedSchema2Run(t *testing.T) {
+func TestWriterCreatesAtomicRedactedSchema3Lifecycle(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
-	metadata := testRunMetadata(2)
-	metadata.RunStatus = RunStatusFailed
-	metadata.Error = "1 of 2 attempted requests failed"
-	metadata.RequestCounts.Successful = 1
-	metadata.RequestCounts.Failed = 1
+	metadata := testLifecycleMetadata(2, 2)
 	requests := []RequestArtifact{
-		testRequestArtifact(metadata.RunID, 2, "request two failed"),
-		testRequestArtifact(metadata.RunID, 1, ""),
+		testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 2, benchmark.OutcomeSucceeded, ""),
+		testRequestArtifact(metadata.RunID, benchmark.RequestPhaseWarmup, 2, benchmark.OutcomeSucceeded, ""),
+		testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, ""),
+		testRequestArtifact(metadata.RunID, benchmark.RequestPhaseWarmup, 1, benchmark.OutcomeSucceeded, ""),
 	}
 
 	path, err := NewWriter(outputDirectory).Write(metadata, requests)
@@ -32,31 +31,23 @@ func TestWriterCreatesAtomicRedactedSchema2Run(t *testing.T) {
 	if path != filepath.Join(outputDirectory, metadata.RunID) {
 		t.Fatalf("path = %q", path)
 	}
-	rootEntries, err := os.ReadDir(path)
-	if err != nil {
-		t.Fatalf("ReadDir root: %v", err)
-	}
-	if len(rootEntries) != 2 || rootEntries[0].Name() != "requests" || rootEntries[1].Name() != "run.json" {
-		t.Fatalf("root entries = %v", rootEntries)
-	}
-	requestEntries, err := os.ReadDir(filepath.Join(path, "requests"))
-	if err != nil {
-		t.Fatalf("ReadDir requests: %v", err)
-	}
-	if len(requestEntries) != 2 || requestEntries[0].Name() != "req-000001" || requestEntries[1].Name() != "req-000002" {
-		t.Fatalf("request entries = %v", requestEntries)
+	for _, phasePath := range []string{"warmup", "measured"} {
+		entries, err := os.ReadDir(filepath.Join(path, phasePath, "requests"))
+		if err != nil {
+			t.Fatalf("ReadDir(%s): %v", phasePath, err)
+		}
+		if len(entries) != 2 {
+			t.Fatalf("%s request entries = %v", phasePath, entries)
+		}
 	}
 
 	combined := readArtifactText(t, filepath.Join(path, "run.json"))
-	for _, requestID := range []string{"req-000001", "req-000002"} {
-		requestDirectory := filepath.Join(path, "requests", requestID)
-		entries, err := os.ReadDir(requestDirectory)
-		if err != nil {
-			t.Fatalf("ReadDir(%s): %v", requestID, err)
+	for _, request := range requests {
+		phasePath := "measured"
+		if request.Phase == benchmark.RequestPhaseWarmup {
+			phasePath = "warmup"
 		}
-		if len(entries) != 2 || entries[0].Name() != "metrics.json" || entries[1].Name() != "observation.json" {
-			t.Fatalf("%s entries = %v", requestID, entries)
-		}
+		requestDirectory := filepath.Join(path, phasePath, "requests", request.Observation.RequestID)
 		combined += readArtifactText(t, filepath.Join(requestDirectory, "observation.json"))
 		combined += readArtifactText(t, filepath.Join(requestDirectory, "metrics.json"))
 	}
@@ -65,7 +56,7 @@ func TestWriterCreatesAtomicRedactedSchema2Run(t *testing.T) {
 			t.Fatalf("artifacts contain forbidden value %q", forbidden)
 		}
 	}
-	for _, required := range []string{metadata.RunID, "req-000001", "req-000002", metadata.PromptSHA256, "client_diagnostics", "run_elapsed_ns"} {
+	for _, required := range []string{metadata.RunID, "warmup-000001", "req-000001", "transitions", "outcomes", "drain"} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("artifacts do not contain required value %q", required)
 		}
@@ -73,37 +64,64 @@ func TestWriterCreatesAtomicRedactedSchema2Run(t *testing.T) {
 
 	var persisted RunMetadata
 	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
-	if persisted.SchemaVersion != 2 || persisted.RequestCounts != metadata.RequestCounts || persisted.ClientDiagnostics != metadata.ClientDiagnostics {
+	if persisted.SchemaVersion != 3 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
 		t.Fatalf("persisted metadata = %+v", persisted)
 	}
 	if _, err := NewWriter(outputDirectory).Write(metadata, requests); err == nil {
 		t.Fatal("duplicate run directory unexpectedly succeeded")
 	}
-	temporaryDirectories, err := filepath.Glob(filepath.Join(outputDirectory, "."+metadata.RunID+"-*"))
-	if err != nil || len(temporaryDirectories) != 0 {
-		t.Fatalf("temporary directories remain: %v, err = %v", temporaryDirectories, err)
+}
+
+func TestWriterAlwaysCreatesEmptyWarmupRoot(t *testing.T) {
+	metadata := testLifecycleMetadata(0, 1)
+	requests := []RequestArtifact{testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")}
+	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, requests)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(path, "warmup", "requests"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("warmup entries = %v, err = %v", entries, err)
 	}
 }
 
-func TestWriterRejectsUnsafeOrInconsistentInput(t *testing.T) {
-	metadata := testRunMetadata(1)
-	validRequest := testRequestArtifact(metadata.RunID, 1, "")
+func TestWriterRejectsInvalidPhaseIdentityAndCounts(t *testing.T) {
+	metadata := testLifecycleMetadata(1, 1)
+	validWarmup := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseWarmup, 1, benchmark.OutcomeSucceeded, "")
+	validMeasured := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
 	tests := []struct {
 		name     string
 		metadata RunMetadata
 		requests []RequestArtifact
 	}{
-		{name: "unsafe run ID", metadata: func() RunMetadata { value := metadata; value.RunID = "../outside"; return value }(), requests: []RequestArtifact{validRequest}},
-		{name: "wrong schema", metadata: func() RunMetadata { value := metadata; value.SchemaVersion = 1; return value }(), requests: []RequestArtifact{validRequest}},
-		{name: "inconsistent counts", metadata: func() RunMetadata { value := metadata; value.RequestCounts.Completed = 0; return value }(), requests: []RequestArtifact{validRequest}},
-		{name: "identity mismatch", metadata: metadata, requests: []RequestArtifact{func() RequestArtifact { value := validRequest; value.Observation.RunID = "other"; return value }()}},
-		{name: "duplicate ID", metadata: func() RunMetadata {
-			value := metadata
-			value.RequestCounts = RequestCounts{Requested: 2, Attempted: 2, Completed: 2, Successful: 2}
-			value.EffectiveWorkers = 2
+		{name: "wrong schema", metadata: func() RunMetadata { value := metadata; value.SchemaVersion = 2; return value }(), requests: []RequestArtifact{validWarmup, validMeasured}},
+		{name: "phase identity mismatch", metadata: metadata, requests: []RequestArtifact{func() RequestArtifact {
+			value := validWarmup
+			value.Observation.RequestID = "req-000001"
+			value.Metrics.RequestID = "req-000001"
 			return value
-		}(), requests: []RequestArtifact{validRequest, validRequest}},
-		{name: "sequence beyond requested count", metadata: metadata, requests: []RequestArtifact{testRequestArtifact(metadata.RunID, 2, "")}},
+		}(), validMeasured}},
+		{name: "duplicate measured ID", metadata: func() RunMetadata {
+			value := metadata
+			value.Measurement.Requested = 2
+			value.Measurement.Attempted = 2
+			value.Measurement.Completed = 2
+			value.Measurement.Successful = 2
+			value.Measurement.EffectiveWorkers = 2
+			value.Measurement.Outcomes.Succeeded = 2
+			return value
+		}(), requests: []RequestArtifact{validWarmup, validMeasured, validMeasured}},
+		{name: "inconsistent outcome", metadata: func() RunMetadata {
+			value := metadata
+			value.Measurement.Outcomes = benchmark.OutcomeCounts{RequestError: 1}
+			return value
+		}(), requests: []RequestArtifact{validWarmup, validMeasured}},
+		{name: "request outcome differs from metadata", metadata: metadata, requests: []RequestArtifact{validWarmup, func() RequestArtifact {
+			value := validMeasured
+			value.Outcome = benchmark.OutcomeRequestError
+			value.Observation.Error = "request failed"
+			return value
+		}()}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -116,7 +134,7 @@ func TestWriterRejectsUnsafeOrInconsistentInput(t *testing.T) {
 
 func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
-	metadata := testRunMetadata(1)
+	metadata := testLifecycleMetadata(0, 1)
 	writer := NewWriter(outputDirectory)
 	writer.writeFile = func(path string, value any) error {
 		if filepath.Base(path) == "metrics.json" {
@@ -124,8 +142,8 @@ func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 		}
 		return writeJSON(path, value)
 	}
-
-	if _, err := writer.Write(metadata, []RequestArtifact{testRequestArtifact(metadata.RunID, 1, "")}); err == nil || !strings.Contains(err.Error(), "injected metrics write failure") {
+	request := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
+	if _, err := writer.Write(metadata, []RequestArtifact{request}); err == nil || !strings.Contains(err.Error(), "injected metrics write failure") {
 		t.Fatalf("Write error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outputDirectory, metadata.RunID)); !os.IsNotExist(err) {
@@ -137,79 +155,162 @@ func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 	}
 }
 
-func TestWriterPersistsPartialCancelledRun(t *testing.T) {
-	metadata := testRunMetadata(5)
-	metadata.RunStatus = RunStatusCancelled
-	metadata.Error = "context canceled"
-	metadata.RequestedConcurrency = 3
-	metadata.EffectiveWorkers = 3
-	metadata.MaxObservedActive = 2
-	metadata.RequestCounts = RequestCounts{Requested: 5, Attempted: 2, Completed: 2, Failed: 2}
-	requests := []RequestArtifact{
-		testRequestArtifact(metadata.RunID, 2, "context canceled"),
-		testRequestArtifact(metadata.RunID, 1, "context canceled"),
+func TestWriterAcceptsFailureCancellationAndDrainTimeoutLifecycleEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata RunMetadata
+		requests []RequestArtifact
+	}{
+		{
+			name: "warmup failure with successful measurement",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(1, 1)
+				value.RunStatus = RunStatusFailed
+				value.Error = "1 of 1 attempted warmup requests failed"
+				value.Warmup.Status = benchmark.PhaseStatusFailed
+				value.Warmup.Successful = 0
+				value.Warmup.Failed = 1
+				value.Warmup.Outcomes = benchmark.OutcomeCounts{RequestError: 1}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseWarmup, 1, benchmark.OutcomeRequestError, "warmup failed"),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, ""),
+			},
+		},
+		{
+			name: "partial parent cancellation",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(0, 3)
+				value.RunStatus = RunStatusCancelled
+				value.Error = context.Canceled.Error()
+				value.Measurement.Status = benchmark.PhaseStatusCancelled
+				value.Measurement.Attempted = 2
+				value.Measurement.Completed = 2
+				value.Measurement.Successful = 0
+				value.Measurement.Failed = 2
+				value.Measurement.Outcomes = benchmark.OutcomeCounts{ParentCancelled: 2}
+				value.Drain.ParentCancelled = true
+				value.Drain.CancelledRequests = 2
+				value.Drain.CancelledRequestIDs = []string{"req-000001", "req-000002"}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 2, benchmark.OutcomeParentCancelled, "context canceled"),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeParentCancelled, "context canceled"),
+			},
+		},
+		{
+			name: "drain timeout",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(0, 2)
+				value.RunStatus = RunStatusFailed
+				value.Error = benchmark.ErrDrainTimeout.Error()
+				value.Measurement.Status = benchmark.PhaseStatusFailed
+				value.Measurement.Successful = 0
+				value.Measurement.Failed = 2
+				value.Measurement.Outcomes = benchmark.OutcomeCounts{DrainTimeout: 2}
+				value.Drain.TimedOut = true
+				value.Drain.CancelledRequests = 2
+				value.Drain.CancelledRequestIDs = []string{"req-000001", "req-000002"}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeDrainTimeout, benchmark.ErrDrainTimeout.Error()),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 2, benchmark.OutcomeDrainTimeout, benchmark.ErrDrainTimeout.Error()),
+			},
+		},
 	}
-
-	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, requests)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	var persisted RunMetadata
-	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
-	if persisted.RunStatus != RunStatusCancelled || persisted.Error != "context canceled" || persisted.RequestCounts != metadata.RequestCounts {
-		t.Fatalf("persisted metadata = %+v", persisted)
-	}
-	entries, err := os.ReadDir(filepath.Join(path, "requests"))
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	if len(entries) != 2 || entries[0].Name() != "req-000001" || entries[1].Name() != "req-000002" {
-		t.Fatalf("partial request entries = %v", entries)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(test.metadata, test.requests)
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			var persisted RunMetadata
+			readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
+			if persisted.RunStatus != test.metadata.RunStatus || persisted.Warmup.Outcomes != test.metadata.Warmup.Outcomes || persisted.Measurement.Outcomes != test.metadata.Measurement.Outcomes || persisted.Drain.CancelledRequests != test.metadata.Drain.CancelledRequests {
+				t.Fatalf("persisted metadata = %+v", persisted)
+			}
+		})
 	}
 }
-func testRunMetadata(requests int) RunMetadata {
+
+func testLifecycleMetadata(warmupRequests, measuredRequests int) RunMetadata {
 	started := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+	warmupStatus := benchmark.PhaseStatusCompleted
+	var warmupStarted *time.Time
+	var warmupCompleted *time.Time
+	if warmupRequests == 0 {
+		warmupStatus = benchmark.PhaseStatusSkipped
+	} else {
+		warmupStarted = timePointer(started.Add(time.Millisecond))
+		warmupCompleted = timePointer(started.Add(10 * time.Millisecond))
+	}
+	warmupWorkers := min(2, warmupRequests)
+	measurementWorkers := min(2, measuredRequests)
 	return RunMetadata{
 		SchemaVersion:            SchemaVersion,
 		RunID:                    "20260818T100000Z-a31f00ff",
 		SlentoreVersion:          "devel",
 		CreatedAt:                started,
-		RunStartedAt:             started,
-		RunCompletedAt:           started.Add(time.Second),
-		RunElapsedNS:             time.Second.Nanoseconds(),
 		RunStatus:                RunStatusCompleted,
 		Model:                    "test-model",
 		BaseURL:                  "http://localhost:8000/v1",
 		RequestedMaxOutputTokens: 64,
 		Temperature:              0,
-		Timeout:                  "2m0s",
+		RequestTimeout:           "2m0s",
 		PromptBytes:              14,
 		PromptSHA256:             "safe-hash-only",
-		RequestedConcurrency:     2,
-		EffectiveWorkers:         min(2, requests),
-		MaxObservedActive:        min(2, requests),
 		SafetyLimits:             SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000},
-		RequestCounts:            RequestCounts{Requested: requests, Attempted: requests, Completed: requests, Successful: requests},
 		ClientDiagnostics:        benchmark.ClientDiagnostics{NumCPU: 8, GOMAXPROCS: 8, GoVersion: "go1.26.6", GOOS: "darwin", GOARCH: "arm64"},
+		Lifecycle: LifecycleMetadata{
+			StartedAt:   started,
+			CompletedAt: started.Add(time.Second),
+			ElapsedNS:   time.Second.Nanoseconds(),
+			Transitions: []benchmark.PhaseTransition{
+				{Sequence: 1, Phase: benchmark.PhaseSetup, EnteredAt: started, Reason: "lifecycle_started"},
+				{Sequence: 2, Phase: benchmark.PhaseWarmup, EnteredAt: started.Add(time.Millisecond), EnteredAfterNS: time.Millisecond.Nanoseconds(), Reason: "warmup_started"},
+				{Sequence: 3, Phase: benchmark.PhaseMeasurement, EnteredAt: started.Add(20 * time.Millisecond), EnteredAfterNS: (20 * time.Millisecond).Nanoseconds(), Reason: "warmup_complete"},
+				{Sequence: 4, Phase: benchmark.PhaseStopAdmission, EnteredAt: started.Add(30 * time.Millisecond), EnteredAfterNS: (30 * time.Millisecond).Nanoseconds(), Reason: "measured_request_limit_reached"},
+				{Sequence: 5, Phase: benchmark.PhaseDrain, EnteredAt: started.Add(30 * time.Millisecond), EnteredAfterNS: (30 * time.Millisecond).Nanoseconds(), Reason: "measured_request_limit_reached"},
+				{Sequence: 6, Phase: benchmark.PhaseArtifacts, EnteredAt: started.Add(time.Second), EnteredAfterNS: time.Second.Nanoseconds(), Reason: "drain_complete"},
+			},
+		},
+		StopAdmission: StopAdmissionMetadata{
+			StoppedAt: started.Add(30 * time.Millisecond), StoppedAfterNS: (30 * time.Millisecond).Nanoseconds(), Reason: "measured_request_limit_reached",
+		},
+		Warmup: PhaseMetadata{
+			Phase: benchmark.RequestPhaseWarmup, Status: warmupStatus, StartedAt: warmupStarted, CompletedAt: warmupCompleted,
+			Requested: warmupRequests, Attempted: warmupRequests, Completed: warmupRequests, Successful: warmupRequests,
+			RequestedConcurrency: 2, EffectiveWorkers: warmupWorkers, MaxObservedActive: warmupWorkers,
+			Outcomes: benchmark.OutcomeCounts{Succeeded: warmupRequests},
+		},
+		Measurement: PhaseMetadata{
+			Phase: benchmark.RequestPhaseMeasured, Status: benchmark.PhaseStatusCompleted, StartedAt: timePointer(started.Add(20 * time.Millisecond)), CompletedAt: timePointer(started.Add(time.Second)), ElapsedNS: (980 * time.Millisecond).Nanoseconds(),
+			Requested: measuredRequests, Attempted: measuredRequests, Completed: measuredRequests, Successful: measuredRequests,
+			RequestedConcurrency: 2, EffectiveWorkers: measurementWorkers, MaxObservedActive: measurementWorkers,
+			Outcomes: benchmark.OutcomeCounts{Succeeded: measuredRequests},
+		},
+		Drain: DrainMetadata{
+			StartedAt: timePointer(started.Add(30 * time.Millisecond)), CompletedAt: timePointer(started.Add(time.Second)), ElapsedNS: (970 * time.Millisecond).Nanoseconds(), Timeout: "2m0s", CancelledRequestIDs: []string{},
+		},
 	}
 }
 
-func testRequestArtifact(runID string, sequence int, requestError string) RequestArtifact {
+func testRequestArtifact(runID string, phase benchmark.RequestPhase, sequence int, outcome benchmark.RequestOutcome, requestError string) RequestArtifact {
 	requestID, _ := benchmark.RequestID(sequence)
+	if phase == benchmark.RequestPhaseWarmup {
+		requestID, _ = benchmark.WarmupRequestID(sequence)
+	}
 	started := time.Date(2026, 8, 18, 10, 0, sequence, 0, time.UTC)
 	completed := started.Add(100 * time.Millisecond)
 	completedAfterNS := (100 * time.Millisecond).Nanoseconds()
 	observation := benchmark.RequestObservation{
-		RunID:            runID,
-		RequestID:        requestID,
-		RequestStartedAt: &started,
-		CompletedAt:      &completed,
-		CompletedAfterNS: &completedAfterNS,
-		StreamEvents:     []benchmark.StreamEvent{},
-		Usage:            benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable},
-		Error:            requestError,
+		RunID: runID, RequestID: requestID, RequestStartedAt: &started, CompletedAt: &completed, CompletedAfterNS: &completedAfterNS,
+		StreamEvents: []benchmark.StreamEvent{}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable}, Error: requestError,
 	}
-	return RequestArtifact{Sequence: sequence, Observation: observation, Metrics: metrics.Calculate(observation)}
+	return RequestArtifact{Sequence: sequence, Phase: phase, Outcome: outcome, Observation: observation, Metrics: metrics.Calculate(observation)}
 }
 
 func readArtifactJSON(t *testing.T, path string, target any) {
@@ -230,4 +331,9 @@ func readArtifactText(t *testing.T, path string) string {
 		t.Fatalf("ReadFile(%s): %v", path, err)
 	}
 	return string(encoded)
+}
+
+func timePointer(value time.Time) *time.Time {
+	copy := value
+	return &copy
 }

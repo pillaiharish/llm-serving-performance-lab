@@ -3,7 +3,6 @@ package benchmark
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -18,6 +17,8 @@ type RunPlan struct {
 
 type CompletedRequest struct {
 	Sequence int
+	Phase    RequestPhase
+	Outcome  RequestOutcome
 	Result   Result
 }
 
@@ -63,77 +64,36 @@ func (c *RunCoordinator) Run(ctx context.Context, plan RunPlan) (RunResult, erro
 		return RunResult{}, fmt.Errorf("per-request timeout must be greater than zero")
 	}
 
-	workerCount := plan.Concurrency
-	if plan.Requests < workerCount {
-		workerCount = plan.Requests
-	}
 	started := c.now()
+	lifecycle := &LifecycleCoordinator{runner: c.runner, now: c.now, newTimer: time.NewTimer}
+	phaseResult, runErr := lifecycle.runPhase(ctx, phaseExecutionPlan{
+		lifecyclePlan: LifecyclePlan{
+			RunID:            plan.RunID,
+			RequestTemplate:  plan.RequestTemplate,
+			Concurrency:      plan.Concurrency,
+			MeasuredRequests: plan.Requests,
+			RequestTimeout:   plan.RequestTimeout,
+			DrainTimeout:     plan.RequestTimeout,
+		},
+		phase:     RequestPhaseMeasured,
+		requests:  plan.Requests,
+		startedAt: started,
+	})
+	completedAt := started
+	if phaseResult.CompletedAt != nil {
+		completedAt = *phaseResult.CompletedAt
+	}
 	runResult := RunResult{
 		StartedAt:            started,
+		CompletedAt:          completedAt,
+		ElapsedNS:            phaseResult.ElapsedNS,
 		RequestedRequests:    plan.Requests,
 		RequestedConcurrency: plan.Concurrency,
-		WorkerCount:          workerCount,
-		Completed:            make([]CompletedRequest, 0, workerCount),
+		WorkerCount:          phaseResult.WorkerCount,
+		MaxObservedActive:    phaseResult.MaxObservedActive,
+		Completed:            phaseResult.Completed,
 	}
-
-	resultsCh := make(chan CompletedRequest, workerCount)
-	var workers sync.WaitGroup
-	var nextSequence atomic.Int64
-	var active atomic.Int64
-	var maxActive atomic.Int64
-
-	worker := func() {
-		defer workers.Done()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			sequence := int(nextSequence.Add(1))
-			if sequence > plan.Requests {
-				return
-			}
-			requestID, err := RequestID(sequence)
-			if err != nil {
-				return
-			}
-			request := plan.RequestTemplate
-			request.RunID = plan.RunID
-			request.RequestID = requestID
-
-			requestContext, cancel := context.WithTimeout(ctx, plan.RequestTimeout)
-			current := active.Add(1)
-			updateMaximum(&maxActive, current)
-			result := c.runner.RunRequest(requestContext, request)
-			active.Add(-1)
-			cancel()
-
-			// Once RunRequest returns, its evidence must reach the collector even
-			// when the parent context has been canceled.
-			resultsCh <- CompletedRequest{Sequence: sequence, Result: result}
-		}
-	}
-
-	workers.Add(workerCount)
-	for index := 0; index < workerCount; index++ {
-		go worker()
-	}
-	go func() {
-		workers.Wait()
-		close(resultsCh)
-	}()
-
-	for completed := range resultsCh {
-		runResult.Completed = append(runResult.Completed, completed)
-	}
-	completedAt := c.now()
-	runResult.CompletedAt = completedAt
-	runResult.ElapsedNS = completedAt.Sub(started).Nanoseconds()
-	runResult.MaxObservedActive = int(maxActive.Load())
-
-	if len(runResult.Completed) < plan.Requests && ctx.Err() != nil {
-		return runResult, ctx.Err()
-	}
-	return runResult, nil
+	return runResult, runErr
 }
 
 func updateMaximum(maximum *atomic.Int64, candidate int64) {

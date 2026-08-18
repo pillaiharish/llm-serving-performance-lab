@@ -55,8 +55,11 @@ request:
   temperature: 1.5
 runtime:
   timeout: "5s"
+  drain_timeout: "9s"
 capture:
   output_dir: "unused"
+benchmark:
+  warmup_requests: 2
 `)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -64,6 +67,8 @@ capture:
 		"bench", "--config", configPath,
 		"--model", "cli-model",
 		"--temperature", "0",
+		"--warmup-requests", "0",
+		"--drain-timeout", "5s",
 		"--api-key-env", "",
 		"--output-dir", outputDirectory,
 	}, &stdout, &stderr, func(string) (string, bool) {
@@ -83,10 +88,13 @@ capture:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 2 || metadata.RequestCounts != (artifacts.RequestCounts{Requested: 1, Attempted: 1, Completed: 1, Successful: 1}) || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 3 || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
-	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
+	if metadata.Drain.CancelledRequestIDs == nil {
+		t.Fatal("normal drain must persist an empty cancelled_request_ids array")
+	}
+	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
 	var observation benchmark.RequestObservation
 	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != "" || observation.FinishReason != "stop" || observation.StatusCode != http.StatusOK {
@@ -146,7 +154,7 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	}
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var observation benchmark.RequestObservation
-	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
+	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
 	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != benchmark.ErrNoGeneratedContent.Error() {
 		t.Fatalf("observation error = %q", observation.Error)
@@ -159,8 +167,8 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	if requestMetrics.RunID != observation.RunID || requestMetrics.RequestID != observation.RequestID {
 		t.Fatalf("failure artifact identities differ: observation=(%q, %q), metrics=(%q, %q)", observation.RunID, observation.RequestID, requestMetrics.RunID, requestMetrics.RequestID)
 	}
-	if !strings.Contains(stdout.String(), benchmark.ErrNoGeneratedContent.Error()) {
-		t.Fatalf("summary does not report no-content failure: %q", stdout.String())
+	if !strings.Contains(stdout.String(), "Measured failed:     1") {
+		t.Fatalf("summary does not report measured failure: %q", stdout.String())
 	}
 }
 
@@ -184,7 +192,7 @@ func TestRunBenchPreflightErrorsDoNotCreateArtifacts(t *testing.T) {
 	}
 }
 
-func TestRunBenchConcurrentOverridesAndSchema2Counts(t *testing.T) {
+func TestRunBenchConcurrentOverridesAndSchema3Counts(t *testing.T) {
 	const (
 		requestCount = 7
 		workers      = 3
@@ -258,8 +266,7 @@ benchmark:
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	wantCounts := artifacts.RequestCounts{Requested: 7, Attempted: 7, Completed: 7, Successful: 7}
-	if metadata.RequestCounts != wantCounts || metadata.RequestedConcurrency != 3 || metadata.EffectiveWorkers != 3 || metadata.MaxObservedActive != 3 {
+	if metadata.Measurement.Requested != 7 || metadata.Measurement.Attempted != 7 || metadata.Measurement.Completed != 7 || metadata.Measurement.Successful != 7 || metadata.Measurement.RequestedConcurrency != 3 || metadata.Measurement.EffectiveWorkers != 3 || metadata.Measurement.MaxObservedActive != 3 {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
 	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7}) {
@@ -268,7 +275,7 @@ benchmark:
 	if metadata.ClientDiagnostics.NumCPU <= 0 || metadata.ClientDiagnostics.GOMAXPROCS <= 0 || metadata.ClientDiagnostics.GoVersion == "" || metadata.ClientDiagnostics.GOOS == "" || metadata.ClientDiagnostics.GOARCH == "" {
 		t.Fatalf("client diagnostics = %+v", metadata.ClientDiagnostics)
 	}
-	requestEntries, err := os.ReadDir(filepath.Join(runDirectory, "requests"))
+	requestEntries, err := os.ReadDir(filepath.Join(runDirectory, "measured", "requests"))
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
@@ -295,6 +302,10 @@ func TestRunBenchAdmissionErrorsDoNotCreateArtifacts(t *testing.T) {
 		{name: "explicit zero", args: []string{"--concurrency", "0"}, want: "benchmark.concurrency"},
 		{name: "concurrency over ceiling", args: []string{"--concurrency", "3", "--max-concurrency", "2"}, want: "exceeds"},
 		{name: "requests over ceiling", args: []string{"--requests", "4", "--max-requests", "3"}, want: "exceeds"},
+		{name: "negative warmup", args: []string{"--warmup-requests", "-1"}, want: "warmup_requests"},
+		{name: "warmup over ceiling", args: []string{"--warmup-requests", "4", "--max-requests", "3"}, want: "warmup_requests"},
+		{name: "zero drain timeout", args: []string{"--drain-timeout", "0s"}, want: "drain_timeout"},
+		{name: "invalid drain timeout", args: []string{"--drain-timeout", "later"}, want: "--drain-timeout"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -310,6 +321,124 @@ func TestRunBenchAdmissionErrorsDoNotCreateArtifacts(t *testing.T) {
 				t.Fatalf("admission failure created artifacts: %v", err)
 			}
 		})
+	}
+}
+
+func TestRunBenchWarmupFailuresDoNotSuppressMeasurement(t *testing.T) {
+	const (
+		warmupRequests   = 4
+		measuredRequests = 3
+	)
+	fixture := normalCLIFixture("private-generated-fragment")
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		if call == 2 {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(writer, "fixed generic failure")
+			return
+		}
+		_, _ = io.WriteString(writer, fixture)
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "private warmup prompt",
+		"--concurrency", "2", "--warmup-requests", "4", "--requests", "3", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, stderr = %q, stdout = %q", exitCode, stderr.String(), stdout.String())
+	}
+	if calls.Load() != warmupRequests+measuredRequests {
+		t.Fatalf("calls = %d, want %d", calls.Load(), warmupRequests+measuredRequests)
+	}
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.Warmup.Attempted != warmupRequests || metadata.Warmup.Successful != 3 || metadata.Warmup.Failed != 1 || metadata.Measurement.Attempted != measuredRequests || metadata.Measurement.Successful != measuredRequests || metadata.Measurement.Failed != 0 {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+	if metadata.Warmup.Outcomes.RequestError != 1 || metadata.Measurement.Outcomes.Succeeded != measuredRequests {
+		t.Fatalf("outcomes = warmup %+v measured %+v", metadata.Warmup.Outcomes, metadata.Measurement.Outcomes)
+	}
+	if metadata.Measurement.StartedAt == nil || metadata.Warmup.CompletedAt == nil || metadata.Measurement.StartedAt.Before(*metadata.Warmup.CompletedAt) {
+		t.Fatalf("phase timing overlaps: warmup=%+v measurement=%+v", metadata.Warmup, metadata.Measurement)
+	}
+	if metadata.StopAdmission.StoppedAfterNS <= 0 || metadata.StopAdmission.Reason != "measured_request_limit_reached" {
+		t.Fatalf("stop admission = %+v", metadata.StopAdmission)
+	}
+	for phase, want := range map[string]int{"warmup": warmupRequests, "measured": measuredRequests} {
+		entries, err := os.ReadDir(filepath.Join(runDirectory, phase, "requests"))
+		if err != nil || len(entries) != want {
+			t.Fatalf("%s request directories = %d, err = %v", phase, len(entries), err)
+		}
+	}
+	combined := stdout.String() + readTreeText(t, runDirectory)
+	for _, forbidden := range []string{"private warmup prompt", "private-generated-fragment"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("summary/artifacts contain forbidden value %q", forbidden)
+		}
+	}
+}
+
+func TestRunBenchDrainTimeoutPersistsAffectedMeasuredRequests(t *testing.T) {
+	const workers = 2
+	started := make(chan struct{})
+	var active atomic.Int64
+	var once sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if active.Add(1) == workers {
+			once.Do(func() { close(started) })
+		}
+		defer active.Add(-1)
+		select {
+		case <-started:
+			<-request.Context().Done()
+		case <-request.Context().Done():
+		}
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "private drain prompt",
+		"--concurrency", "2", "--requests", "2", "--timeout", "2s", "--drain-timeout", "30ms", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, stderr = %q, stdout = %q", exitCode, stderr.String(), stdout.String())
+	}
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.Error != benchmark.ErrDrainTimeout.Error() || !metadata.Drain.TimedOut || metadata.Drain.ParentCancelled || metadata.Drain.CancelledRequests != workers || metadata.Measurement.Outcomes.DrainTimeout != workers {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+	if strings.Join(metadata.Drain.CancelledRequestIDs, ",") != "req-000001,req-000002" {
+		t.Fatalf("cancelled IDs = %v", metadata.Drain.CancelledRequestIDs)
+	}
+	for sequence := 1; sequence <= workers; sequence++ {
+		requestID, _ := benchmark.RequestID(sequence)
+		var observation benchmark.RequestObservation
+		readJSON(t, filepath.Join(runDirectory, "measured", "requests", requestID, "observation.json"), &observation)
+		if observation.RequestID != requestID || observation.RunID != metadata.RunID || observation.HeadersAfterNS == nil || observation.CompletedAfterNS == nil || observation.Error == "" {
+			t.Fatalf("partial observation %s = %+v", requestID, observation)
+		}
+	}
+	if !strings.Contains(stdout.String(), "Drain timed out:     true") || !strings.Contains(stdout.String(), "Drain cancellations: 2 requests") {
+		t.Fatalf("drain summary = %q", stdout.String())
+	}
+	if strings.Contains(stdout.String()+readTreeText(t, runDirectory), "private drain prompt") {
+		t.Fatal("drain artifacts contain prompt")
 	}
 }
 
@@ -342,10 +471,10 @@ func TestRunBenchMixedFailuresAttemptEveryRequest(t *testing.T) {
 	}
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(onlyRunDirectory(t, outputDirectory), "run.json"), &metadata)
-	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.RequestCounts != (artifacts.RequestCounts{Requested: 5, Attempted: 5, Completed: 5, Successful: 4, Failed: 1}) {
+	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.Measurement.Requested != 5 || metadata.Measurement.Attempted != 5 || metadata.Measurement.Completed != 5 || metadata.Measurement.Successful != 4 || metadata.Measurement.Failed != 1 {
 		t.Fatalf("metadata = %+v", metadata)
 	}
-	if metadata.Error != "1 of 5 attempted requests failed" {
+	if metadata.Error != "1 of 5 attempted measured requests failed" {
 		t.Fatalf("run error = %q", metadata.Error)
 	}
 }
@@ -396,10 +525,10 @@ func TestRunBenchCancellationPersistsCollectedSubset(t *testing.T) {
 	if metadata.RunStatus != artifacts.RunStatusCancelled || metadata.Error != context.Canceled.Error() {
 		t.Fatalf("metadata = %+v", metadata)
 	}
-	if metadata.RequestCounts.Requested != 20 || metadata.RequestCounts.Attempted != workers || metadata.RequestCounts.Completed != workers || metadata.RequestCounts.Failed != workers {
-		t.Fatalf("partial counts = %+v", metadata.RequestCounts)
+	if metadata.Measurement.Requested != 20 || metadata.Measurement.Attempted != workers || metadata.Measurement.Completed != workers || metadata.Measurement.Failed != workers {
+		t.Fatalf("partial counts = %+v", metadata.Measurement)
 	}
-	entries, err := os.ReadDir(filepath.Join(runDirectory, "requests"))
+	entries, err := os.ReadDir(filepath.Join(runDirectory, "measured", "requests"))
 	if err != nil || len(entries) != workers {
 		t.Fatalf("partial request directories = %d, err = %v", len(entries), err)
 	}

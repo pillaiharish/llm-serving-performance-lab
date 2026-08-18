@@ -2,7 +2,9 @@ package fakeserver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/fakeserver"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/openai"
 )
 
@@ -95,6 +98,189 @@ func TestRunCoordinatorReachesEffectiveConcurrencyWithRealClient(t *testing.T) {
 				seen[observation.RequestID] = struct{}{}
 			}
 		})
+	}
+}
+
+func TestLifecycleCoordinatorUsesSharedClientWithoutPhaseOverlap(t *testing.T) {
+	const (
+		warmupRequests   = 4
+		measuredRequests = 3
+		concurrency      = 2
+	)
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 2 * time.Millisecond
+	config.ChunkInterval = time.Millisecond
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	fakeHandler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	tracker := newPhaseTrackingHandler(fakeHandler, warmupRequests, concurrency)
+	server := httptest.NewServer(tracker)
+	defer server.Close()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = concurrency
+	transport.MaxIdleConnsPerHost = concurrency
+	transport.MaxConnsPerHost = concurrency
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := benchmark.NewLifecycleCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.LifecyclePlan{
+		RunID: "run-lifecycle-real-client",
+		RequestTemplate: benchmark.Request{
+			Model: "fake-model", Prompt: "private integration prompt", MaxOutputTokens: 4, Temperature: 0,
+		},
+		Concurrency: concurrency, WarmupRequests: warmupRequests, MeasuredRequests: measuredRequests,
+		RequestTimeout: 3 * time.Second, DrainTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if tracker.calls.Load() != warmupRequests+measuredRequests || tracker.overlap.Load() {
+		t.Fatalf("calls/phase overlap = %d/%v", tracker.calls.Load(), tracker.overlap.Load())
+	}
+	if tracker.warmupMaximum.Load() != concurrency || tracker.measuredMaximum.Load() != concurrency || result.Warmup.MaxObservedActive != concurrency || result.Measurement.MaxObservedActive != concurrency {
+		t.Fatalf("handler/coordinator maxima = %d/%d/%d/%d", tracker.warmupMaximum.Load(), tracker.measuredMaximum.Load(), result.Warmup.MaxObservedActive, result.Measurement.MaxObservedActive)
+	}
+	if result.Warmup.CompletedAt == nil || result.Measurement.StartedAt == nil || result.Measurement.StartedAt.Before(*result.Warmup.CompletedAt) {
+		t.Fatalf("phase timing overlaps: warmup=%+v measurement=%+v", result.Warmup, result.Measurement)
+	}
+	assertLifecycleIDs(t, result.Warmup.Completed, "warmup")
+	assertLifecycleIDs(t, result.Measurement.Completed, "req")
+	for _, completed := range append(append([]benchmark.CompletedRequest{}, result.Warmup.Completed...), result.Measurement.Completed...) {
+		if completed.Result.Err != nil || completed.Outcome != benchmark.OutcomeSucceeded {
+			t.Fatalf("request %s failed: outcome=%s err=%v", completed.Result.Observation.RequestID, completed.Outcome, completed.Result.Err)
+		}
+		observation := completed.Result.Observation
+		if observation.RequestStartedAt == nil || observation.HeadersAfterNS == nil || observation.FirstByteAfterNS == nil || observation.FirstContentAfterNS == nil || observation.LastContentAfterNS == nil || observation.CompletedAfterNS == nil {
+			t.Fatalf("missing timing evidence: %+v", observation)
+		}
+		calculated := metrics.Calculate(observation)
+		for name, scalar := range map[string]metrics.Scalar{"ttfb": calculated.TTFB, "ttft": calculated.TTFT, "ttlt": calculated.TTLT, "e2e": calculated.E2E, "tpot": calculated.TPOT, "decode": calculated.DecodeTokensPerSecond} {
+			if !scalar.Available || math.IsNaN(scalar.Value) || math.IsInf(scalar.Value, 0) {
+				t.Fatalf("%s for %s = %+v", name, observation.RequestID, scalar)
+			}
+		}
+	}
+}
+
+func TestLifecycleCoordinatorDrainTimeoutWithRealClientPreservesPartialEvidence(t *testing.T) {
+	const concurrency = 2
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 500 * time.Millisecond
+	fakeHandler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	tracker := newOverlapTrackingHandler(fakeHandler, concurrency)
+	server := httptest.NewServer(tracker)
+	defer server.Close()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = concurrency
+	transport.MaxIdleConnsPerHost = concurrency
+	transport.MaxConnsPerHost = concurrency
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := benchmark.NewLifecycleCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.LifecyclePlan{
+		RunID:           "run-lifecycle-drain-timeout",
+		RequestTemplate: benchmark.Request{Model: "fake-model", Prompt: "private prompt", MaxOutputTokens: 4},
+		Concurrency:     concurrency, MeasuredRequests: concurrency, RequestTimeout: 2 * time.Second, DrainTimeout: 30 * time.Millisecond,
+	})
+	if err == nil || !errors.Is(err, benchmark.ErrDrainTimeout) {
+		t.Fatalf("Run error = %v", err)
+	}
+	if !result.Drain.TimedOut || result.Drain.ParentCancelled || result.Measurement.Outcomes.DrainTimeout != concurrency || len(result.Drain.CancelledRequestIDs) != concurrency {
+		t.Fatalf("lifecycle result = %+v", result)
+	}
+	for _, completed := range result.Measurement.Completed {
+		observation := completed.Result.Observation
+		if completed.Outcome != benchmark.OutcomeDrainTimeout || observation.StatusCode != http.StatusOK || observation.HeadersAfterNS == nil || observation.CompletedAfterNS == nil || observation.FirstContentAfterNS != nil {
+			t.Fatalf("partial result = %+v", completed)
+		}
+	}
+}
+
+func assertLifecycleIDs(t *testing.T, completed []benchmark.CompletedRequest, prefix string) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(completed))
+	for _, request := range completed {
+		want := fmt.Sprintf("%s-%06d", prefix, request.Sequence)
+		if request.Result.Observation.RequestID != want {
+			t.Fatalf("request ID = %q, want %q", request.Result.Observation.RequestID, want)
+		}
+		if _, exists := seen[want]; exists {
+			t.Fatalf("duplicate request ID %q", want)
+		}
+		seen[want] = struct{}{}
+	}
+}
+
+type phaseTrackingHandler struct {
+	next            http.Handler
+	warmupRequests  int64
+	target          int64
+	warmupRelease   chan struct{}
+	measuredRelease chan struct{}
+	warmupOnce      sync.Once
+	measuredOnce    sync.Once
+	calls           atomic.Int64
+	warmupCompleted atomic.Int64
+	warmupActive    atomic.Int64
+	measuredActive  atomic.Int64
+	warmupMaximum   atomic.Int64
+	measuredMaximum atomic.Int64
+	overlap         atomic.Bool
+}
+
+func newPhaseTrackingHandler(next http.Handler, warmupRequests, target int) *phaseTrackingHandler {
+	return &phaseTrackingHandler{
+		next: next, warmupRequests: int64(warmupRequests), target: int64(target),
+		warmupRelease: make(chan struct{}), measuredRelease: make(chan struct{}),
+	}
+}
+
+func (h *phaseTrackingHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	call := h.calls.Add(1)
+	if call <= h.warmupRequests {
+		current := h.warmupActive.Add(1)
+		updateIntegrationMaximum(&h.warmupMaximum, current)
+		defer func() {
+			h.warmupActive.Add(-1)
+			h.warmupCompleted.Add(1)
+		}()
+		if current == h.target {
+			h.warmupOnce.Do(func() { close(h.warmupRelease) })
+		}
+		select {
+		case <-h.warmupRelease:
+			h.next.ServeHTTP(writer, request)
+		case <-request.Context().Done():
+		}
+		return
+	}
+	if h.warmupCompleted.Load() != h.warmupRequests {
+		h.overlap.Store(true)
+	}
+	current := h.measuredActive.Add(1)
+	updateIntegrationMaximum(&h.measuredMaximum, current)
+	defer h.measuredActive.Add(-1)
+	if current == h.target {
+		h.measuredOnce.Do(func() { close(h.measuredRelease) })
+	}
+	select {
+	case <-h.measuredRelease:
+		h.next.ServeHTTP(writer, request)
+	case <-request.Context().Done():
 	}
 }
 

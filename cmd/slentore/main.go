@@ -72,6 +72,8 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	var requests int
 	var maxConcurrency int
 	var maxRequests int
+	var warmupRequests int
+	var drainTimeoutText string
 
 	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
 	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
@@ -86,6 +88,8 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.IntVar(&requests, "requests", 0, "total requests to attempt")
 	flags.IntVar(&maxConcurrency, "max-concurrency", 0, "client admission ceiling for concurrency")
 	flags.IntVar(&maxRequests, "max-requests", 0, "client admission ceiling for total requests")
+	flags.IntVar(&warmupRequests, "warmup-requests", 0, "warmup requests to attempt before measurement")
+	flags.StringVar(&drainTimeoutText, "drain-timeout", "", "maximum drain duration after measured admission stops")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -148,6 +152,17 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	if visited["max-requests"] {
 		overrides.MaxRequests = &maxRequests
 	}
+	if visited["warmup-requests"] {
+		overrides.WarmupRequests = &warmupRequests
+	}
+	if visited["drain-timeout"] {
+		drainTimeout, err := time.ParseDuration(drainTimeoutText)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: --drain-timeout: %v\n", err)
+			return 2
+		}
+		overrides.DrainTimeout = &drainTimeout
+	}
 	resolved.ApplyOverrides(overrides)
 	if err := resolved.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
@@ -163,6 +178,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	admission, err := benchmark.AdmitRun(benchmark.AdmissionRequest{
 		Concurrency:    resolved.Benchmark.Concurrency,
 		Requests:       resolved.Benchmark.Requests,
+		WarmupRequests: resolved.Benchmark.WarmupRequests,
 		MaxConcurrency: resolved.Benchmark.Safety.MaxConcurrency,
 		MaxRequests:    resolved.Benchmark.Safety.MaxRequests,
 	}, diagnostics)
@@ -175,7 +191,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
-	httpClient, transport, err := newSharedHTTPClient(admission.WorkerCount)
+	httpClient, transport, err := newSharedHTTPClient(admission.TransportWorkerLimit)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: create shared HTTP client: %v\n", err)
 		return 2
@@ -197,52 +213,42 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	createdAt := time.Now().UTC()
-	coordinator := benchmark.NewRunCoordinator(runner)
-	runResult, runErr := coordinator.Run(ctx, benchmark.RunPlan{
-		RunID:           runID,
-		RequestTemplate: requestTemplate,
-		Concurrency:     resolved.Benchmark.Concurrency,
-		Requests:        resolved.Benchmark.Requests,
-		RequestTimeout:  resolved.Runtime.Timeout,
+	coordinator := benchmark.NewLifecycleCoordinator(runner)
+	lifecycleResult, runErr := coordinator.Run(ctx, benchmark.LifecyclePlan{
+		RunID:            runID,
+		RequestTemplate:  requestTemplate,
+		Concurrency:      resolved.Benchmark.Concurrency,
+		WarmupRequests:   resolved.Benchmark.WarmupRequests,
+		MeasuredRequests: resolved.Benchmark.Requests,
+		RequestTimeout:   resolved.Runtime.Timeout,
+		DrainTimeout:     resolved.Runtime.DrainTimeout,
 	})
-	if runResult.StartedAt.IsZero() {
+	if lifecycleResult.StartedAt.IsZero() {
 		fmt.Fprintf(stderr, "error: coordinate benchmark run: %v\n", runErr)
 		return 1
 	}
 
-	requestArtifacts := make([]artifacts.RequestArtifact, 0, len(runResult.Completed))
-	counts := artifacts.RequestCounts{
-		Requested: resolved.Benchmark.Requests,
-		Attempted: len(runResult.Completed),
-		Completed: len(runResult.Completed),
-	}
-	for _, completed := range runResult.Completed {
-		if completed.Result.Err == nil {
-			counts.Successful++
-		} else {
-			counts.Failed++
-		}
-		requestArtifacts = append(requestArtifacts, artifacts.RequestArtifact{
-			Sequence:    completed.Sequence,
-			Observation: completed.Result.Observation,
-			Metrics:     metrics.Calculate(completed.Result.Observation),
-		})
-	}
+	requestArtifacts := lifecycleRequestArtifacts(lifecycleResult)
+	warmupMetadata := phaseMetadata(lifecycleResult.Warmup)
+	measurementMetadata := phaseMetadata(lifecycleResult.Measurement)
 
 	runStatus := artifacts.RunStatusCompleted
 	runError := ""
 	if runErr != nil {
 		runStatus = artifacts.RunStatusFailed
-		if errors.Is(runErr, context.Canceled) {
+		if errors.Is(runErr, context.Canceled) || (lifecycleResult.Drain.ParentCancelled && !errors.Is(runErr, benchmark.ErrDrainTimeout)) {
 			runStatus = artifacts.RunStatusCancelled
 		}
 		runError = runErr.Error()
-	} else if counts.Failed > 0 {
+	} else if warmupMetadata.Failed > 0 {
 		runStatus = artifacts.RunStatusFailed
-		runError = fmt.Sprintf("%d of %d attempted requests failed", counts.Failed, counts.Attempted)
-	} else if counts.Attempted != counts.Requested {
+		runError = fmt.Sprintf("%d of %d attempted warmup requests failed", warmupMetadata.Failed, warmupMetadata.Attempted)
+	} else if measurementMetadata.Failed > 0 {
 		runStatus = artifacts.RunStatusFailed
-		runError = fmt.Sprintf("attempted %d of %d requested requests", counts.Attempted, counts.Requested)
+		runError = fmt.Sprintf("%d of %d attempted measured requests failed", measurementMetadata.Failed, measurementMetadata.Attempted)
+	} else if warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested {
+		runStatus = artifacts.RunStatusFailed
+		runError = "lifecycle did not attempt every requested warmup and measured request"
 	}
 	promptHash := sha256.Sum256([]byte(resolved.Request.Prompt))
 	metadata := artifacts.RunMetadata{
@@ -250,39 +256,64 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		RunID:                    runID,
 		SlentoreVersion:          slentoreVersion(),
 		CreatedAt:                createdAt,
-		RunStartedAt:             runResult.StartedAt,
-		RunCompletedAt:           runResult.CompletedAt,
-		RunElapsedNS:             runResult.ElapsedNS,
 		RunStatus:                runStatus,
 		Error:                    runError,
 		Model:                    resolved.Endpoint.Model,
 		BaseURL:                  resolved.Endpoint.BaseURL,
 		RequestedMaxOutputTokens: resolved.Request.MaxOutputTokens,
 		Temperature:              resolved.Request.Temperature,
-		Timeout:                  resolved.Runtime.Timeout.String(),
+		RequestTimeout:           resolved.Runtime.Timeout.String(),
 		PromptBytes:              len([]byte(resolved.Request.Prompt)),
 		PromptSHA256:             hex.EncodeToString(promptHash[:]),
-		RequestedConcurrency:     resolved.Benchmark.Concurrency,
-		EffectiveWorkers:         admission.WorkerCount,
-		MaxObservedActive:        runResult.MaxObservedActive,
 		SafetyLimits: artifacts.SafetyLimits{
 			MaxConcurrency: resolved.Benchmark.Safety.MaxConcurrency,
 			MaxRequests:    resolved.Benchmark.Safety.MaxRequests,
 		},
-		RequestCounts:     counts,
 		ClientDiagnostics: admission.Diagnostics,
+		Lifecycle: artifacts.LifecycleMetadata{
+			StartedAt:   lifecycleResult.StartedAt,
+			CompletedAt: lifecycleResult.CompletedAt,
+			ElapsedNS:   lifecycleResult.ElapsedNS,
+			Transitions: lifecycleResult.Transitions,
+		},
+		StopAdmission: stopAdmissionMetadata(lifecycleResult.Transitions),
+		Warmup:        warmupMetadata,
+		Measurement:   measurementMetadata,
+		Drain: artifacts.DrainMetadata{
+			StartedAt:           lifecycleResult.Drain.StartedAt,
+			CompletedAt:         lifecycleResult.Drain.CompletedAt,
+			ElapsedNS:           lifecycleResult.Drain.ElapsedNS,
+			Timeout:             lifecycleResult.Drain.Timeout.String(),
+			TimedOut:            lifecycleResult.Drain.TimedOut,
+			ParentCancelled:     lifecycleResult.Drain.ParentCancelled,
+			CancelledRequests:   len(lifecycleResult.Drain.CancelledRequestIDs),
+			CancelledRequestIDs: lifecycleResult.Drain.CancelledRequestIDs,
+		},
 	}
 
 	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).Write(metadata, requestArtifacts)
-	printRunSummary(stdout, runID, runResult, counts, requestArtifacts, artifactPath, runErr)
+	printLifecycleSummary(stdout, runID, lifecycleResult, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr)
 	if artifactErr != nil {
 		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
 		return 1
 	}
-	if runErr != nil || counts.Failed > 0 || counts.Attempted != counts.Requested {
+	if runErr != nil || warmupMetadata.Failed > 0 || measurementMetadata.Failed > 0 || warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested {
 		return 1
 	}
 	return 0
+}
+
+func stopAdmissionMetadata(transitions []benchmark.PhaseTransition) artifacts.StopAdmissionMetadata {
+	for _, transition := range transitions {
+		if transition.Phase == benchmark.PhaseStopAdmission {
+			return artifacts.StopAdmissionMetadata{
+				StoppedAt:      transition.EnteredAt,
+				StoppedAfterNS: transition.EnteredAfterNS,
+				Reason:         transition.Reason,
+			}
+		}
+	}
+	return artifacts.StopAdmissionMetadata{}
 }
 
 func slentoreVersion() string {
@@ -305,23 +336,77 @@ func printBenchUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Secrets are accepted only through --api-key-env.")
 }
 
-func printRunSummary(writer io.Writer, runID string, runResult benchmark.RunResult, counts artifacts.RequestCounts, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error) {
-	fmt.Fprintf(writer, "Run:        %s\n", runID)
-	fmt.Fprintf(writer, "Requested:  %d requests\n", counts.Requested)
-	fmt.Fprintf(writer, "Attempted:  %d requests\n", counts.Attempted)
-	fmt.Fprintf(writer, "Completed:  %d requests\n", counts.Completed)
-	fmt.Fprintf(writer, "Successful: %d requests\n", counts.Successful)
-	fmt.Fprintf(writer, "Failed:     %d requests\n", counts.Failed)
-	fmt.Fprintf(writer, "Concurrency: %d requested\n", runResult.RequestedConcurrency)
-	fmt.Fprintf(writer, "Workers:    %d effective\n", runResult.WorkerCount)
-	fmt.Fprintf(writer, "Max active: %d requests\n", runResult.MaxObservedActive)
-	fmt.Fprintf(writer, "Run elapsed: %s\n", time.Duration(runResult.ElapsedNS))
-	if runErr != nil {
-		fmt.Fprintf(writer, "Run error:  %s\n", runErr)
+func phaseMetadata(result benchmark.PhaseResult) artifacts.PhaseMetadata {
+	attempted := len(result.Completed)
+	return artifacts.PhaseMetadata{
+		Phase:                result.Phase,
+		Status:               result.Status,
+		StartedAt:            result.StartedAt,
+		CompletedAt:          result.CompletedAt,
+		ElapsedNS:            result.ElapsedNS,
+		Requested:            result.RequestedRequests,
+		Attempted:            attempted,
+		Completed:            attempted,
+		Successful:           result.Outcomes.Succeeded,
+		Failed:               result.Outcomes.Failed(),
+		RequestedConcurrency: result.RequestedConcurrency,
+		EffectiveWorkers:     result.WorkerCount,
+		MaxObservedActive:    result.MaxObservedActive,
+		Outcomes:             result.Outcomes,
 	}
-	if counts.Requested == 1 && len(requestArtifacts) == 1 {
-		fmt.Fprintln(writer)
-		printRequestSummary(writer, requestArtifacts[0].Observation, requestArtifacts[0].Metrics)
+}
+
+func lifecycleRequestArtifacts(result benchmark.LifecycleResult) []artifacts.RequestArtifact {
+	requestArtifacts := make([]artifacts.RequestArtifact, 0, len(result.Warmup.Completed)+len(result.Measurement.Completed))
+	for _, phase := range [][]benchmark.CompletedRequest{result.Warmup.Completed, result.Measurement.Completed} {
+		for _, completed := range phase {
+			requestArtifacts = append(requestArtifacts, artifacts.RequestArtifact{
+				Sequence:    completed.Sequence,
+				Phase:       completed.Phase,
+				Outcome:     completed.Outcome,
+				Observation: completed.Result.Observation,
+				Metrics:     metrics.Calculate(completed.Result.Observation),
+			})
+		}
+	}
+	return requestArtifacts
+}
+
+func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error) {
+	fmt.Fprintf(writer, "Run:                 %s\n", runID)
+	fmt.Fprintf(writer, "Warmup requested:    %d\n", warmup.Requested)
+	fmt.Fprintf(writer, "Warmup attempted:    %d\n", warmup.Attempted)
+	fmt.Fprintf(writer, "Warmup successful:   %d\n", warmup.Successful)
+	fmt.Fprintf(writer, "Warmup failed:       %d\n", warmup.Failed)
+	fmt.Fprintf(writer, "Measured requested:  %d\n", measurement.Requested)
+	fmt.Fprintf(writer, "Measured attempted:  %d\n", measurement.Attempted)
+	fmt.Fprintf(writer, "Measured successful: %d\n", measurement.Successful)
+	fmt.Fprintf(writer, "Measured failed:     %d\n", measurement.Failed)
+	fmt.Fprintf(writer, "Concurrency:         %d requested\n", measurement.RequestedConcurrency)
+	fmt.Fprintf(writer, "Warmup workers:      %d effective\n", warmup.EffectiveWorkers)
+	fmt.Fprintf(writer, "Measured workers:    %d effective\n", measurement.EffectiveWorkers)
+	fmt.Fprintf(writer, "Warmup max active:   %d requests\n", warmup.MaxObservedActive)
+	fmt.Fprintf(writer, "Measured max active: %d requests\n", measurement.MaxObservedActive)
+	fmt.Fprintf(writer, "Drain timeout:       %s\n", lifecycle.Drain.Timeout)
+	fmt.Fprintf(writer, "Drain timed out:     %t\n", lifecycle.Drain.TimedOut)
+	fmt.Fprintf(writer, "Drain cancellations: %d requests\n", len(lifecycle.Drain.CancelledRequestIDs))
+	fmt.Fprintf(writer, "Lifecycle elapsed:   %s\n", time.Duration(lifecycle.ElapsedNS))
+	fmt.Fprintf(writer, "Measurement elapsed: %s\n", time.Duration(measurement.ElapsedNS))
+	if runErr != nil {
+		fmt.Fprintf(writer, "Run error:            %s\n", runErr)
+	}
+	if measurement.Requested == 1 && measurement.Successful == 1 {
+		var measured *artifacts.RequestArtifact
+		for index := range requestArtifacts {
+			if requestArtifacts[index].Phase == benchmark.RequestPhaseMeasured && requestArtifacts[index].Outcome == benchmark.OutcomeSucceeded {
+				measured = &requestArtifacts[index]
+				break
+			}
+		}
+		if measured != nil {
+			fmt.Fprintln(writer)
+			printRequestSummary(writer, measured.Observation, measured.Metrics)
+		}
 	}
 	if artifactPath != "" {
 		fmt.Fprintf(writer, "Artifacts:  %s\n", artifactPath)
