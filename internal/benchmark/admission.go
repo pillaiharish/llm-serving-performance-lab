@@ -8,6 +8,7 @@ import (
 type AdmissionRequest struct {
 	Concurrency    int
 	Requests       int
+	WarmupRequests int
 	MaxConcurrency int
 	MaxRequests    int
 }
@@ -21,8 +22,11 @@ type ClientDiagnostics struct {
 }
 
 type AdmissionDecision struct {
-	WorkerCount int
-	Diagnostics ClientDiagnostics
+	WorkerCount            int
+	WarmupWorkerCount      int
+	MeasurementWorkerCount int
+	TransportWorkerLimit   int
+	Diagnostics            ClientDiagnostics
 }
 
 func CollectClientDiagnostics() ClientDiagnostics {
@@ -45,6 +49,9 @@ func AdmitRun(request AdmissionRequest, diagnostics ClientDiagnostics) (Admissio
 	if request.Requests <= 0 {
 		return AdmissionDecision{}, fmt.Errorf("benchmark.requests must be greater than zero")
 	}
+	if request.WarmupRequests < 0 {
+		return AdmissionDecision{}, fmt.Errorf("benchmark.warmup_requests must not be negative")
+	}
 	if request.MaxConcurrency <= 0 {
 		return AdmissionDecision{}, fmt.Errorf("benchmark.safety.max_concurrency must be greater than zero")
 	}
@@ -57,10 +64,29 @@ func AdmitRun(request AdmissionRequest, diagnostics ClientDiagnostics) (Admissio
 	if request.Requests > request.MaxRequests {
 		return AdmissionDecision{}, fmt.Errorf("benchmark.requests %d exceeds benchmark.safety.max_requests %d; raise the safety ceiling explicitly to admit this run", request.Requests, request.MaxRequests)
 	}
-
-	workers := request.Concurrency
-	if request.Requests < workers {
-		workers = request.Requests
+	if request.WarmupRequests > request.MaxRequests {
+		return AdmissionDecision{}, fmt.Errorf("benchmark.warmup_requests %d exceeds benchmark.safety.max_requests %d; raise the safety ceiling explicitly to admit this run", request.WarmupRequests, request.MaxRequests)
 	}
-	return AdmissionDecision{WorkerCount: workers, Diagnostics: diagnostics}, nil
+
+	measurementWorkers := request.Concurrency
+	if request.Requests < measurementWorkers {
+		measurementWorkers = request.Requests
+	}
+	warmupWorkers := request.Concurrency
+	if request.WarmupRequests == 0 {
+		warmupWorkers = 0
+	} else if request.WarmupRequests < warmupWorkers {
+		warmupWorkers = request.WarmupRequests
+	}
+	transportLimit := measurementWorkers
+	if warmupWorkers > transportLimit {
+		transportLimit = warmupWorkers
+	}
+	return AdmissionDecision{
+		WorkerCount:            measurementWorkers,
+		WarmupWorkerCount:      warmupWorkers,
+		MeasurementWorkerCount: measurementWorkers,
+		TransportWorkerLimit:   transportLimit,
+		Diagnostics:            diagnostics,
+	}, nil
 }

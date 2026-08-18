@@ -36,7 +36,8 @@ type Request struct {
 }
 
 type Runtime struct {
-	Timeout time.Duration
+	Timeout      time.Duration
+	DrainTimeout time.Duration
 }
 
 type Capture struct {
@@ -44,9 +45,10 @@ type Capture struct {
 }
 
 type Benchmark struct {
-	Concurrency int
-	Requests    int
-	Safety      Safety
+	Concurrency    int
+	Requests       int
+	WarmupRequests int
+	Safety         Safety
 }
 
 type Safety struct {
@@ -69,6 +71,8 @@ type Overrides struct {
 	Requests        *int
 	MaxConcurrency  *int
 	MaxRequests     *int
+	WarmupRequests  *int
+	DrainTimeout    *time.Duration
 }
 
 func Default() Config {
@@ -78,7 +82,7 @@ func Default() Config {
 			MaxOutputTokens: 64,
 			Temperature:     0,
 		},
-		Runtime: Runtime{Timeout: 120 * time.Second},
+		Runtime: Runtime{Timeout: 120 * time.Second, DrainTimeout: 120 * time.Second},
 		Capture: Capture{OutputDir: "runs"},
 		Benchmark: Benchmark{
 			Concurrency: 1,
@@ -128,6 +132,12 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	if overrides.MaxRequests != nil {
 		c.Benchmark.Safety.MaxRequests = *overrides.MaxRequests
 	}
+	if overrides.WarmupRequests != nil {
+		c.Benchmark.WarmupRequests = *overrides.WarmupRequests
+	}
+	if overrides.DrainTimeout != nil {
+		c.Runtime.DrainTimeout = *overrides.DrainTimeout
+	}
 }
 
 func (c Config) Validate() error {
@@ -158,6 +168,9 @@ func (c Config) Validate() error {
 	if c.Runtime.Timeout <= 0 {
 		return fmt.Errorf("runtime.timeout must be greater than zero")
 	}
+	if c.Runtime.DrainTimeout <= 0 {
+		return fmt.Errorf("runtime.drain_timeout must be greater than zero")
+	}
 	if strings.TrimSpace(c.Capture.OutputDir) == "" {
 		return fmt.Errorf("capture.output_dir is required")
 	}
@@ -166,6 +179,9 @@ func (c Config) Validate() error {
 	}
 	if c.Benchmark.Requests <= 0 {
 		return fmt.Errorf("benchmark.requests must be greater than zero")
+	}
+	if c.Benchmark.WarmupRequests < 0 {
+		return fmt.Errorf("benchmark.warmup_requests must not be negative")
 	}
 	if c.Benchmark.Safety.MaxConcurrency <= 0 {
 		return fmt.Errorf("benchmark.safety.max_concurrency must be greater than zero")

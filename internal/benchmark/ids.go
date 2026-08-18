@@ -26,3 +26,10 @@ func RequestID(sequence int) (string, error) {
 	}
 	return fmt.Sprintf("req-%06d", sequence), nil
 }
+
+func WarmupRequestID(sequence int) (string, error) {
+	if sequence <= 0 {
+		return "", fmt.Errorf("warmup request sequence must be greater than zero")
+	}
+	return fmt.Sprintf("warmup-%06d", sequence), nil
+}

@@ -31,7 +31,8 @@ type fileRequest struct {
 }
 
 type fileRuntime struct {
-	Timeout *string `yaml:"timeout"`
+	Timeout      *string `yaml:"timeout"`
+	DrainTimeout *string `yaml:"drain_timeout"`
 }
 
 type fileCapture struct {
@@ -39,9 +40,10 @@ type fileCapture struct {
 }
 
 type fileBenchmark struct {
-	Concurrency *int       `yaml:"concurrency"`
-	Requests    *int       `yaml:"requests"`
-	Safety      fileSafety `yaml:"safety"`
+	Concurrency    *int       `yaml:"concurrency"`
+	Requests       *int       `yaml:"requests"`
+	WarmupRequests *int       `yaml:"warmup_requests"`
+	Safety         fileSafety `yaml:"safety"`
 }
 
 type fileSafety struct {
@@ -110,6 +112,13 @@ func Load(path string) (Config, error) {
 		}
 		resolved.Runtime.Timeout = timeout
 	}
+	if raw.Runtime.DrainTimeout != nil {
+		drainTimeout, err := time.ParseDuration(*raw.Runtime.DrainTimeout)
+		if err != nil {
+			return Config{}, fmt.Errorf("runtime.drain_timeout: %w", err)
+		}
+		resolved.Runtime.DrainTimeout = drainTimeout
+	}
 	if raw.Capture.OutputDir != nil {
 		resolved.Capture.OutputDir = *raw.Capture.OutputDir
 	}
@@ -118,6 +127,9 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.Requests != nil {
 		resolved.Benchmark.Requests = *raw.Benchmark.Requests
+	}
+	if raw.Benchmark.WarmupRequests != nil {
+		resolved.Benchmark.WarmupRequests = *raw.Benchmark.WarmupRequests
 	}
 	if raw.Benchmark.Safety.MaxConcurrency != nil {
 		resolved.Benchmark.Safety.MaxConcurrency = *raw.Benchmark.Safety.MaxConcurrency
