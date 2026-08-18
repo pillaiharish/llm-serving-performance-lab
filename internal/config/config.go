@@ -13,13 +13,14 @@ const SupportedVersion = 1
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Config is the fully resolved configuration used for one benchmark request.
+// Config is the fully resolved configuration used for one benchmark run.
 type Config struct {
-	Version  int
-	Endpoint Endpoint
-	Request  Request
-	Runtime  Runtime
-	Capture  Capture
+	Version   int
+	Endpoint  Endpoint
+	Request   Request
+	Runtime   Runtime
+	Capture   Capture
+	Benchmark Benchmark
 }
 
 type Endpoint struct {
@@ -42,6 +43,17 @@ type Capture struct {
 	OutputDir string
 }
 
+type Benchmark struct {
+	Concurrency int
+	Requests    int
+	Safety      Safety
+}
+
+type Safety struct {
+	MaxConcurrency int
+	MaxRequests    int
+}
+
 // Overrides contains only values explicitly supplied on the command line.
 // Pointer fields allow zero to remain a meaningful override.
 type Overrides struct {
@@ -53,6 +65,10 @@ type Overrides struct {
 	Temperature     *float64
 	Timeout         *time.Duration
 	OutputDir       *string
+	Concurrency     *int
+	Requests        *int
+	MaxConcurrency  *int
+	MaxRequests     *int
 }
 
 func Default() Config {
@@ -64,6 +80,14 @@ func Default() Config {
 		},
 		Runtime: Runtime{Timeout: 120 * time.Second},
 		Capture: Capture{OutputDir: "runs"},
+		Benchmark: Benchmark{
+			Concurrency: 1,
+			Requests:    1,
+			Safety: Safety{
+				MaxConcurrency: 256,
+				MaxRequests:    10000,
+			},
+		},
 	}
 }
 
@@ -91,6 +115,18 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	}
 	if overrides.OutputDir != nil {
 		c.Capture.OutputDir = *overrides.OutputDir
+	}
+	if overrides.Concurrency != nil {
+		c.Benchmark.Concurrency = *overrides.Concurrency
+	}
+	if overrides.Requests != nil {
+		c.Benchmark.Requests = *overrides.Requests
+	}
+	if overrides.MaxConcurrency != nil {
+		c.Benchmark.Safety.MaxConcurrency = *overrides.MaxConcurrency
+	}
+	if overrides.MaxRequests != nil {
+		c.Benchmark.Safety.MaxRequests = *overrides.MaxRequests
 	}
 }
 
@@ -124,6 +160,18 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Capture.OutputDir) == "" {
 		return fmt.Errorf("capture.output_dir is required")
+	}
+	if c.Benchmark.Concurrency <= 0 {
+		return fmt.Errorf("benchmark.concurrency must be greater than zero")
+	}
+	if c.Benchmark.Requests <= 0 {
+		return fmt.Errorf("benchmark.requests must be greater than zero")
+	}
+	if c.Benchmark.Safety.MaxConcurrency <= 0 {
+		return fmt.Errorf("benchmark.safety.max_concurrency must be greater than zero")
+	}
+	if c.Benchmark.Safety.MaxRequests <= 0 {
+		return fmt.Errorf("benchmark.safety.max_requests must be greater than zero")
 	}
 	return nil
 }

@@ -22,8 +22,8 @@ func NewRunner(executor StreamExecutor) *Runner {
 	return &Runner{executor: executor}
 }
 
-// RunRequest owns exactly one request. Concurrency and scheduling belong to
-// future callers, not this primitive.
+// RunRequest owns exactly one request. Concurrency belongs to RunCoordinator,
+// not this primitive.
 func (r *Runner) RunRequest(ctx context.Context, request Request) Result {
 	observation := RequestObservation{
 		RunID:        request.RunID,

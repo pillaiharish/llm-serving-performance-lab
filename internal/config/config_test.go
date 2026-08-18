@@ -10,16 +10,20 @@ import (
 
 func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved := Default()
-	if resolved.Request.MaxOutputTokens != 64 || resolved.Runtime.Timeout != 120*time.Second || resolved.Capture.OutputDir != "runs" {
+	if resolved.Request.MaxOutputTokens != 64 || resolved.Runtime.Timeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 {
 		t.Fatalf("unexpected defaults: %+v", resolved)
 	}
 
 	temperature := 0.0
 	apiKeyEnv := ""
+	concurrency := 0
+	requests := 0
+	maxConcurrency := 0
+	maxRequests := 0
 	resolved.Endpoint.APIKeyEnv = "FROM_YAML"
 	resolved.Request.Temperature = 1.25
-	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv})
-	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" {
+	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv, Concurrency: &concurrency, Requests: &requests, MaxConcurrency: &maxConcurrency, MaxRequests: &maxRequests})
+	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" || resolved.Benchmark.Concurrency != 0 || resolved.Benchmark.Requests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 0 || resolved.Benchmark.Safety.MaxRequests != 0 {
 		t.Fatalf("explicit zero/empty overrides not applied: %+v", resolved)
 	}
 }
@@ -34,6 +38,12 @@ request:
   temperature: 0.25
 runtime:
   timeout: 3s
+benchmark:
+  concurrency: 4
+  requests: 20
+  safety:
+    max_concurrency: 8
+    max_requests: 25
 `)
 	resolved, err := Load(path)
 	if err != nil {
@@ -42,7 +52,7 @@ runtime:
 	if resolved.Request.MaxOutputTokens != 64 || resolved.Capture.OutputDir != "runs" {
 		t.Fatalf("defaults were not preserved: %+v", resolved)
 	}
-	if resolved.Request.Temperature != 0.25 || resolved.Runtime.Timeout != 3*time.Second {
+	if resolved.Request.Temperature != 0.25 || resolved.Runtime.Timeout != 3*time.Second || resolved.Benchmark.Concurrency != 4 || resolved.Benchmark.Requests != 20 || resolved.Benchmark.Safety.MaxConcurrency != 8 || resolved.Benchmark.Safety.MaxRequests != 25 {
 		t.Fatalf("YAML values were not applied: %+v", resolved)
 	}
 	if err := resolved.Validate(); err != nil {
@@ -92,6 +102,10 @@ func TestValidateRejectsUnsafeOrIncompleteConfiguration(t *testing.T) {
 		{name: "invalid key env", alter: func(value *Config) { value.Endpoint.APIKeyEnv = "BAD-NAME" }, want: "environment variable name"},
 		{name: "zero tokens", alter: func(value *Config) { value.Request.MaxOutputTokens = 0 }, want: "greater than zero"},
 		{name: "zero timeout", alter: func(value *Config) { value.Runtime.Timeout = 0 }, want: "greater than zero"},
+		{name: "zero concurrency", alter: func(value *Config) { value.Benchmark.Concurrency = 0 }, want: "benchmark.concurrency"},
+		{name: "zero requests", alter: func(value *Config) { value.Benchmark.Requests = 0 }, want: "benchmark.requests"},
+		{name: "zero max concurrency", alter: func(value *Config) { value.Benchmark.Safety.MaxConcurrency = 0 }, want: "max_concurrency"},
+		{name: "zero max requests", alter: func(value *Config) { value.Benchmark.Safety.MaxRequests = 0 }, want: "max_requests"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

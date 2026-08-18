@@ -3,10 +3,12 @@
 This repository contains **Slentore**, a Go benchmark harness for studying LLM
 serving performance from raw client-side timing evidence.
 
-Slentore currently implements one production-quality primitive: one streaming
-OpenAI-compatible Chat Completions request. Concurrency, request-rate
-scheduling, warmup, run-level aggregation, deployment, and observability are
-intentionally outside this version.
+Slentore implements a production-quality streaming OpenAI-compatible Chat
+Completions request primitive and a fixed-concurrency, closed-loop coordinator
+around it. One invocation attempts a configured number of requests at one
+configured concurrency level. Request-rate scheduling, warmup, concurrency
+sweeps, percentile aggregation, deployment, and observability remain outside
+this version.
 
 The original local single-GPU learning series remains unchanged under
 [`experiments/local-single-gpu-v0/`](experiments/local-single-gpu-v0/).
@@ -45,6 +47,13 @@ runtime:
 
 capture:
   output_dir: "runs"
+
+benchmark:
+  concurrency: 1
+  requests: 1
+  safety:
+    max_concurrency: 256
+    max_requests: 10000
 ```
 
 `base_url` is the OpenAI API root. Slentore removes a trailing slash and
@@ -58,8 +67,16 @@ built-in defaults < YAML < explicitly supplied CLI flags
 ```
 
 The built-in defaults are 64 maximum output tokens, temperature 0, a 120
-second timeout, and the `runs` output directory. Base URL, model, and prompt
-must be supplied by YAML and/or flags.
+second per-request timeout, the `runs` output directory, concurrency 1, one
+request, maximum concurrency 256, and maximum requests 10,000. Base URL,
+model, and prompt must be supplied by YAML and/or flags.
+
+Requested concurrency and request count must be positive and must not exceed
+their configured safety ceilings. Slentore rejects an over-limit run; it never
+silently clamps it. `--max-concurrency` and `--max-requests` can explicitly
+raise the ceilings when a larger run is intentional. Admission records the
+client's CPU count, `GOMAXPROCS`, Go version, operating system, and architecture
+as diagnostics, but does not infer a capacity limit from them.
 
 Unknown YAML fields, multiple YAML documents, unsupported versions, invalid
 durations, unsafe URLs, and missing required values are rejected before
@@ -84,7 +101,7 @@ must exist and be non-empty. The key is never printed or persisted.
 URLs containing userinfo, query strings, or fragments are rejected so a secret
 cannot accidentally be embedded in persisted endpoint metadata.
 
-## Run one benchmark request
+## Run a benchmark
 
 ```bash
 build/slentore bench --config configs/ollama.example.yaml
@@ -102,7 +119,11 @@ build/slentore bench \
   --temperature 0 \
   --timeout 120s \
   --output-dir runs \
-  --api-key-env ""
+  --api-key-env "" \
+  --concurrency 4 \
+  --requests 16 \
+  --max-concurrency 256 \
+  --max-requests 10000
 ```
 
 Slentore sends:
@@ -119,13 +140,44 @@ Slentore sends:
 ```
 
 Generated content is parsed for byte counts and timing but is not streamed to
-the terminal or accumulated in memory.
+the terminal or accumulated in memory. With the default `concurrency: 1` and
+`requests: 1`, behavior remains compatible with the original single-request
+invocation and its detailed scalar terminal summary.
+
+## Closed-loop concurrency
+
+For `N` requested calls at concurrency `C`, Slentore starts exactly
+`min(C, N)` long-lived workers. Each worker claims the next request ID, executes
+it to completion or timeout, and immediately claims another while work remains.
+There is no pacing or target QPS: offered load is closed-loop and depends on
+request completion. IDs are assigned as `req-000001` through `req-N`; the
+completion-order result list is independent of ID order.
+
+Every claimed request gets its own child context with the configured timeout.
+A request failure is preserved in that request's observation and does not stop
+later claims. SIGINT or SIGTERM stops new claims, cancels active requests,
+waits for workers and their results to drain, then writes the collected subset.
+There is no separate run-wide timeout.
+
+One `http.Client` and one cloned standard transport are shared by all workers
+for the run. The transport's per-host connection and idle-connection limits
+are set to the effective worker count, retaining the standard dial and TLS
+behavior. Idle connections are closed after the run. Workers perform no file
+I/O and never send SSE or token events through coordinator channels; the
+coordinator collects one completed result per attempted request in memory.
+The default 10,000-request ceiling bounds that collection unless explicitly
+raised.
+
+The terminal summary always reports requested, attempted, completed,
+successful, and failed counts, requested concurrency, effective workers,
+maximum observed active calls, elapsed time, and the artifact path. Detailed
+per-request scalar output is retained only when `N=1`.
 
 ## Deterministic local fake server
 
 `slentore-fake-server` is a loopback-only-by-default OpenAI-compatible SSE
 fixture server. It provides controlled HTTP and streaming delays so Slentore's
-one-request measurement, failure handling, and artifacts can be validated
+per-request measurement, failure handling, and artifacts can be validated
 without a GPU, model, credential, cloud endpoint, or network access.
 
 Start the default normal profile:
@@ -145,7 +197,8 @@ build/slentore-fake-server \
 ```
 
 In another terminal, benchmark it exactly like any other OpenAI-compatible
-endpoint:
+endpoint. This example exercises four overlapping requests while leaving the
+fixture's per-request protocol unchanged:
 
 ```bash
 build/slentore bench \
@@ -156,7 +209,9 @@ build/slentore bench \
   --temperature 0 \
   --timeout 5s \
   --output-dir runs \
-  --api-key-env ""
+  --api-key-env "" \
+  --concurrency 4 \
+  --requests 16
 ```
 
 The normal timeline is:
@@ -247,7 +302,8 @@ retained.
 
 The client continues reading through EOF after `[DONE]`. EOF without `[DONE]`,
 malformed JSON, data after `[DONE]`, or an oversized SSE frame is a stream
-failure. The timeout bounds the entire request through `context.Context`.
+failure. Each request's timeout bounds that entire request through
+`context.Context`.
 
 ## Metric definitions
 
@@ -308,31 +364,47 @@ After measurement, Slentore creates:
 runs/
 └── 20260816T120501Z-a31f00ff/
     ├── run.json
-    ├── observation.json
-    └── metrics.json
+    └── requests/
+        ├── req-000001/
+        │   ├── observation.json
+        │   └── metrics.json
+        └── req-000002/
+            ├── observation.json
+            └── metrics.json
 ```
 
-- `run.json` contains IDs, Slentore version, model, safe base URL, requested
-  output limit, temperature, timeout, prompt byte length, and prompt SHA-256.
+- `run.json` is artifact schema version 2. It contains the run ID, Slentore
+  version, model, safe base URL, requested output limit, temperature,
+  per-request timeout, prompt byte length and SHA-256, requested/attempted/
+  completed/successful/failed counts, concurrency and worker evidence, safety
+  ceilings, run wall times and monotonic-derived elapsed nanoseconds, run
+  status/error, and portable client diagnostics. It has no singular request
+  ID.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
   request-relative nanosecond offsets, event evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
 - `metrics.json` contains `(run_id, request_id)` and values derived from that
   observation.
 
-All three files remain artifact schema version 1; the observation and metrics
-can be associated by `(run_id, request_id)` without relying on their directory.
+The writer sorts a copy of completed results by request sequence, validates
+run/request identities and duplicates, stages the complete tree, and atomically
+renames it into place only after every file has been written. Metric derivation
+and filesystem work happen after the coordinator's measured interval.
+Historical committed schema-1 validation artifacts remain unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
 
-Configuration and secret errors occur before measurement, create no run
-directory, and exit with status 2. Once measurement starts, DNS/connect errors,
-timeouts, non-2xx responses, malformed streams, cancellation, and a clean
-stream with no generated content preserve partial observation and metric
-artifacts before exiting with status 1. Missing usage alone is not a request
-failure; usage-dependent metrics are simply unavailable. A valid
-content-bearing stream exits with status 0.
+Configuration, URL, secret, admission, and client-construction errors occur
+before measurement, create no run directory, and exit with status 2. Once
+measurement starts, DNS/connect errors, per-request timeouts, non-2xx
+responses, malformed streams, cancellation, and a clean stream with no
+generated content preserve partial observation and metric artifacts before
+exiting with status 1. Except for parent cancellation, measured request
+failures do not stop remaining IDs from being attempted. Artifact failures and
+coordinator failures also exit 1. Missing usage alone is not a request failure;
+usage-dependent metrics are simply unavailable. Exit status 0 requires all
+`N` requests to succeed and the complete artifact tree to be written.
 
 ## Validate
 
@@ -351,10 +423,11 @@ go test -race ./...
 
 ## Current scope
 
-This version performs exactly one request. It contains no concurrency option,
-worker pool, jobs/results channel, QPS scheduler, warmup lifecycle, percentile
-aggregation, tokenizer workload generator, database, GPU discovery, deployment
-automation, or observability integration. Future orchestration can reuse one
-shared `http.Client` and call the same `Runner.RunRequest` primitive without
-changing how a request is observed or how its metrics are calculated. The fake
-server validates this primitive but does not add orchestration to it.
+This version runs one fixed concurrency level with one finite request count. It
+contains no QPS scheduler, warmup lifecycle, concurrency sweep, run-level
+percentile or throughput aggregation, tokenizer workload generator, database,
+GPU discovery, deployment automation, or observability integration. The
+coordinator reuses the existing `Runner.RunRequest` primitive without changing
+how an individual request is observed or how its metrics are calculated. The
+fake server provides controlled HTTP/SSE validation; it does not simulate GPU,
+model, tokenizer, or vLLM capacity behavior.

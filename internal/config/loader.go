@@ -10,11 +10,12 @@ import (
 )
 
 type fileConfig struct {
-	Version  *int         `yaml:"version"`
-	Endpoint fileEndpoint `yaml:"endpoint"`
-	Request  fileRequest  `yaml:"request"`
-	Runtime  fileRuntime  `yaml:"runtime"`
-	Capture  fileCapture  `yaml:"capture"`
+	Version   *int          `yaml:"version"`
+	Endpoint  fileEndpoint  `yaml:"endpoint"`
+	Request   fileRequest   `yaml:"request"`
+	Runtime   fileRuntime   `yaml:"runtime"`
+	Capture   fileCapture   `yaml:"capture"`
+	Benchmark fileBenchmark `yaml:"benchmark"`
 }
 
 type fileEndpoint struct {
@@ -35,6 +36,17 @@ type fileRuntime struct {
 
 type fileCapture struct {
 	OutputDir *string `yaml:"output_dir"`
+}
+
+type fileBenchmark struct {
+	Concurrency *int       `yaml:"concurrency"`
+	Requests    *int       `yaml:"requests"`
+	Safety      fileSafety `yaml:"safety"`
+}
+
+type fileSafety struct {
+	MaxConcurrency *int `yaml:"max_concurrency"`
+	MaxRequests    *int `yaml:"max_requests"`
 }
 
 // Load applies a YAML file, when provided, over the built-in defaults.
@@ -100,6 +112,18 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Capture.OutputDir != nil {
 		resolved.Capture.OutputDir = *raw.Capture.OutputDir
+	}
+	if raw.Benchmark.Concurrency != nil {
+		resolved.Benchmark.Concurrency = *raw.Benchmark.Concurrency
+	}
+	if raw.Benchmark.Requests != nil {
+		resolved.Benchmark.Requests = *raw.Benchmark.Requests
+	}
+	if raw.Benchmark.Safety.MaxConcurrency != nil {
+		resolved.Benchmark.Safety.MaxConcurrency = *raw.Benchmark.Safety.MaxConcurrency
+	}
+	if raw.Benchmark.Safety.MaxRequests != nil {
+		resolved.Benchmark.Safety.MaxRequests = *raw.Benchmark.Safety.MaxRequests
 	}
 
 	return resolved, nil
