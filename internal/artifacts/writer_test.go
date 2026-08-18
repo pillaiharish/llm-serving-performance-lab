@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -115,6 +116,12 @@ func TestWriterRejectsInvalidPhaseIdentityAndCounts(t *testing.T) {
 			value.Measurement.Outcomes = benchmark.OutcomeCounts{RequestError: 1}
 			return value
 		}(), requests: []RequestArtifact{validWarmup, validMeasured}},
+		{name: "request outcome differs from metadata", metadata: metadata, requests: []RequestArtifact{validWarmup, func() RequestArtifact {
+			value := validMeasured
+			value.Outcome = benchmark.OutcomeRequestError
+			value.Observation.Error = "request failed"
+			return value
+		}()}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -145,6 +152,87 @@ func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 	temporaryDirectories, err := filepath.Glob(filepath.Join(outputDirectory, "."+metadata.RunID+"-*"))
 	if err != nil || len(temporaryDirectories) != 0 {
 		t.Fatalf("temporary directories remain: %v, err = %v", temporaryDirectories, err)
+	}
+}
+
+func TestWriterAcceptsFailureCancellationAndDrainTimeoutLifecycleEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata RunMetadata
+		requests []RequestArtifact
+	}{
+		{
+			name: "warmup failure with successful measurement",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(1, 1)
+				value.RunStatus = RunStatusFailed
+				value.Error = "1 of 1 attempted warmup requests failed"
+				value.Warmup.Status = benchmark.PhaseStatusFailed
+				value.Warmup.Successful = 0
+				value.Warmup.Failed = 1
+				value.Warmup.Outcomes = benchmark.OutcomeCounts{RequestError: 1}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseWarmup, 1, benchmark.OutcomeRequestError, "warmup failed"),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, ""),
+			},
+		},
+		{
+			name: "partial parent cancellation",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(0, 3)
+				value.RunStatus = RunStatusCancelled
+				value.Error = context.Canceled.Error()
+				value.Measurement.Status = benchmark.PhaseStatusCancelled
+				value.Measurement.Attempted = 2
+				value.Measurement.Completed = 2
+				value.Measurement.Successful = 0
+				value.Measurement.Failed = 2
+				value.Measurement.Outcomes = benchmark.OutcomeCounts{ParentCancelled: 2}
+				value.Drain.ParentCancelled = true
+				value.Drain.CancelledRequests = 2
+				value.Drain.CancelledRequestIDs = []string{"req-000001", "req-000002"}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 2, benchmark.OutcomeParentCancelled, "context canceled"),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeParentCancelled, "context canceled"),
+			},
+		},
+		{
+			name: "drain timeout",
+			metadata: func() RunMetadata {
+				value := testLifecycleMetadata(0, 2)
+				value.RunStatus = RunStatusFailed
+				value.Error = benchmark.ErrDrainTimeout.Error()
+				value.Measurement.Status = benchmark.PhaseStatusFailed
+				value.Measurement.Successful = 0
+				value.Measurement.Failed = 2
+				value.Measurement.Outcomes = benchmark.OutcomeCounts{DrainTimeout: 2}
+				value.Drain.TimedOut = true
+				value.Drain.CancelledRequests = 2
+				value.Drain.CancelledRequestIDs = []string{"req-000001", "req-000002"}
+				return value
+			}(),
+			requests: []RequestArtifact{
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeDrainTimeout, benchmark.ErrDrainTimeout.Error()),
+				testRequestArtifact("20260818T100000Z-a31f00ff", benchmark.RequestPhaseMeasured, 2, benchmark.OutcomeDrainTimeout, benchmark.ErrDrainTimeout.Error()),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(test.metadata, test.requests)
+			if err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			var persisted RunMetadata
+			readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
+			if persisted.RunStatus != test.metadata.RunStatus || persisted.Warmup.Outcomes != test.metadata.Warmup.Outcomes || persisted.Measurement.Outcomes != test.metadata.Measurement.Outcomes || persisted.Drain.CancelledRequests != test.metadata.Drain.CancelledRequests {
+				t.Fatalf("persisted metadata = %+v", persisted)
+			}
+		})
 	}
 }
 
@@ -188,6 +276,9 @@ func testLifecycleMetadata(warmupRequests, measuredRequests int) RunMetadata {
 				{Sequence: 5, Phase: benchmark.PhaseDrain, EnteredAt: started.Add(30 * time.Millisecond), EnteredAfterNS: (30 * time.Millisecond).Nanoseconds(), Reason: "measured_request_limit_reached"},
 				{Sequence: 6, Phase: benchmark.PhaseArtifacts, EnteredAt: started.Add(time.Second), EnteredAfterNS: time.Second.Nanoseconds(), Reason: "drain_complete"},
 			},
+		},
+		StopAdmission: StopAdmissionMetadata{
+			StoppedAt: started.Add(30 * time.Millisecond), StoppedAfterNS: (30 * time.Millisecond).Nanoseconds(), Reason: "measured_request_limit_reached",
 		},
 		Warmup: PhaseMetadata{
 			Phase: benchmark.RequestPhaseWarmup, Status: warmupStatus, StartedAt: warmupStarted, CompletedAt: warmupCompleted,
