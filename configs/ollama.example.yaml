@@ -18,9 +18,12 @@ capture:
   output_dir: "runs"
 
 benchmark:
+  mode: closed_loop
   concurrency: 1
   requests: 1
   warmup_requests: 0
   safety:
     max_concurrency: 256
     max_requests: 10000
+    max_request_rate: 10000
+    max_in_flight: 256

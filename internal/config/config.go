@@ -23,6 +23,13 @@ type Config struct {
 	Benchmark Benchmark
 }
 
+type LoadMode string
+
+const (
+	LoadModeClosedLoop LoadMode = "closed_loop"
+	LoadModeOpenLoop   LoadMode = "open_loop"
+)
+
 type Endpoint struct {
 	BaseURL   string
 	APIKeyEnv string
@@ -45,34 +52,61 @@ type Capture struct {
 }
 
 type Benchmark struct {
+	Mode           LoadMode
 	Concurrency    int
 	Requests       int
 	WarmupRequests int
+	OpenLoop       OpenLoop
 	Safety         Safety
+	supplied       benchmarkFields
+}
+
+type OpenLoop struct {
+	RequestRate float64
+	Duration    time.Duration
+	MaxInFlight int
 }
 
 type Safety struct {
 	MaxConcurrency int
 	MaxRequests    int
+	MaxRequestRate float64
+	MaxInFlight    int
+}
+
+type benchmarkFields struct {
+	Mode          bool
+	Concurrency   bool
+	Requests      bool
+	RequestRate   bool
+	Duration      bool
+	MaxInFlight   bool
+	OpenLoopBlock bool
 }
 
 // Overrides contains only values explicitly supplied on the command line.
 // Pointer fields allow zero to remain a meaningful override.
 type Overrides struct {
-	BaseURL         *string
-	APIKeyEnv       *string
-	Model           *string
-	Prompt          *string
-	MaxOutputTokens *int
-	Temperature     *float64
-	Timeout         *time.Duration
-	OutputDir       *string
-	Concurrency     *int
-	Requests        *int
-	MaxConcurrency  *int
-	MaxRequests     *int
-	WarmupRequests  *int
-	DrainTimeout    *time.Duration
+	BaseURL            *string
+	APIKeyEnv          *string
+	Model              *string
+	Prompt             *string
+	MaxOutputTokens    *int
+	Temperature        *float64
+	Timeout            *time.Duration
+	OutputDir          *string
+	Concurrency        *int
+	Requests           *int
+	MaxConcurrency     *int
+	MaxRequests        *int
+	WarmupRequests     *int
+	DrainTimeout       *time.Duration
+	Mode               *LoadMode
+	RequestRate        *float64
+	Duration           *time.Duration
+	MaxInFlight        *int
+	MaxRequestRate     *float64
+	MaxInFlightCeiling *int
 }
 
 func Default() Config {
@@ -85,11 +119,14 @@ func Default() Config {
 		Runtime: Runtime{Timeout: 120 * time.Second, DrainTimeout: 120 * time.Second},
 		Capture: Capture{OutputDir: "runs"},
 		Benchmark: Benchmark{
+			Mode:        LoadModeClosedLoop,
 			Concurrency: 1,
 			Requests:    1,
 			Safety: Safety{
 				MaxConcurrency: 256,
 				MaxRequests:    10000,
+				MaxRequestRate: 10000,
+				MaxInFlight:    256,
 			},
 		},
 	}
@@ -122,9 +159,11 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	}
 	if overrides.Concurrency != nil {
 		c.Benchmark.Concurrency = *overrides.Concurrency
+		c.Benchmark.supplied.Concurrency = true
 	}
 	if overrides.Requests != nil {
 		c.Benchmark.Requests = *overrides.Requests
+		c.Benchmark.supplied.Requests = true
 	}
 	if overrides.MaxConcurrency != nil {
 		c.Benchmark.Safety.MaxConcurrency = *overrides.MaxConcurrency
@@ -137,6 +176,31 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	}
 	if overrides.DrainTimeout != nil {
 		c.Runtime.DrainTimeout = *overrides.DrainTimeout
+	}
+	if overrides.Mode != nil {
+		c.Benchmark.Mode = *overrides.Mode
+		c.Benchmark.supplied.Mode = true
+	}
+	if overrides.RequestRate != nil {
+		c.Benchmark.OpenLoop.RequestRate = *overrides.RequestRate
+		c.Benchmark.supplied.RequestRate = true
+		c.Benchmark.supplied.OpenLoopBlock = true
+	}
+	if overrides.Duration != nil {
+		c.Benchmark.OpenLoop.Duration = *overrides.Duration
+		c.Benchmark.supplied.Duration = true
+		c.Benchmark.supplied.OpenLoopBlock = true
+	}
+	if overrides.MaxInFlight != nil {
+		c.Benchmark.OpenLoop.MaxInFlight = *overrides.MaxInFlight
+		c.Benchmark.supplied.MaxInFlight = true
+		c.Benchmark.supplied.OpenLoopBlock = true
+	}
+	if overrides.MaxRequestRate != nil {
+		c.Benchmark.Safety.MaxRequestRate = *overrides.MaxRequestRate
+	}
+	if overrides.MaxInFlightCeiling != nil {
+		c.Benchmark.Safety.MaxInFlight = *overrides.MaxInFlightCeiling
 	}
 }
 
@@ -174,12 +238,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Capture.OutputDir) == "" {
 		return fmt.Errorf("capture.output_dir is required")
 	}
-	if c.Benchmark.Concurrency <= 0 {
-		return fmt.Errorf("benchmark.concurrency must be greater than zero")
-	}
-	if c.Benchmark.Requests <= 0 {
-		return fmt.Errorf("benchmark.requests must be greater than zero")
-	}
 	if c.Benchmark.WarmupRequests < 0 {
 		return fmt.Errorf("benchmark.warmup_requests must not be negative")
 	}
@@ -188,6 +246,39 @@ func (c Config) Validate() error {
 	}
 	if c.Benchmark.Safety.MaxRequests <= 0 {
 		return fmt.Errorf("benchmark.safety.max_requests must be greater than zero")
+	}
+	if math.IsNaN(c.Benchmark.Safety.MaxRequestRate) || math.IsInf(c.Benchmark.Safety.MaxRequestRate, 0) || c.Benchmark.Safety.MaxRequestRate <= 0 {
+		return fmt.Errorf("benchmark.safety.max_request_rate must be a finite number greater than zero")
+	}
+	if c.Benchmark.Safety.MaxInFlight <= 0 {
+		return fmt.Errorf("benchmark.safety.max_in_flight must be greater than zero")
+	}
+	switch c.Benchmark.Mode {
+	case LoadModeClosedLoop:
+		if c.Benchmark.supplied.OpenLoopBlock {
+			return fmt.Errorf("benchmark.open_loop settings are incompatible with benchmark.mode closed_loop")
+		}
+		if c.Benchmark.Concurrency <= 0 {
+			return fmt.Errorf("benchmark.concurrency must be greater than zero")
+		}
+		if c.Benchmark.Requests <= 0 {
+			return fmt.Errorf("benchmark.requests must be greater than zero")
+		}
+	case LoadModeOpenLoop:
+		if c.Benchmark.supplied.Concurrency || c.Benchmark.supplied.Requests {
+			return fmt.Errorf("benchmark.concurrency and benchmark.requests are incompatible with benchmark.mode open_loop")
+		}
+		if math.IsNaN(c.Benchmark.OpenLoop.RequestRate) || math.IsInf(c.Benchmark.OpenLoop.RequestRate, 0) || c.Benchmark.OpenLoop.RequestRate <= 0 {
+			return fmt.Errorf("benchmark.open_loop.request_rate must be a finite number greater than zero")
+		}
+		if c.Benchmark.OpenLoop.Duration <= 0 {
+			return fmt.Errorf("benchmark.open_loop.duration must be greater than zero")
+		}
+		if c.Benchmark.OpenLoop.MaxInFlight <= 0 {
+			return fmt.Errorf("benchmark.open_loop.max_in_flight must be greater than zero")
+		}
+	default:
+		return fmt.Errorf("benchmark.mode must be closed_loop or open_loop")
 	}
 	return nil
 }

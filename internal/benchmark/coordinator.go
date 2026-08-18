@@ -20,6 +20,7 @@ type CompletedRequest struct {
 	Phase    RequestPhase
 	Outcome  RequestOutcome
 	Result   Result
+	Arrival  *ArrivalRecord
 }
 
 type RunResult struct {
@@ -65,8 +66,8 @@ func (c *RunCoordinator) Run(ctx context.Context, plan RunPlan) (RunResult, erro
 	}
 
 	started := c.now()
-	lifecycle := &LifecycleCoordinator{runner: c.runner, now: c.now, newTimer: time.NewTimer}
-	phaseResult, runErr := lifecycle.runPhase(ctx, phaseExecutionPlan{
+	lifecycle := &LifecycleCoordinator{runner: c.runner, now: c.now, newTimer: newRealLifecycleTimer}
+	phaseResult, runErr := lifecycle.runClosedLoopPhase(ctx, phaseExecutionPlan{
 		lifecyclePlan: LifecyclePlan{
 			RunID:            plan.RunID,
 			RequestTemplate:  plan.RequestTemplate,

@@ -40,15 +40,25 @@ type fileCapture struct {
 }
 
 type fileBenchmark struct {
-	Concurrency    *int       `yaml:"concurrency"`
-	Requests       *int       `yaml:"requests"`
-	WarmupRequests *int       `yaml:"warmup_requests"`
-	Safety         fileSafety `yaml:"safety"`
+	Mode           *LoadMode     `yaml:"mode"`
+	Concurrency    *int          `yaml:"concurrency"`
+	Requests       *int          `yaml:"requests"`
+	WarmupRequests *int          `yaml:"warmup_requests"`
+	OpenLoop       *fileOpenLoop `yaml:"open_loop"`
+	Safety         fileSafety    `yaml:"safety"`
+}
+
+type fileOpenLoop struct {
+	RequestRate *float64 `yaml:"request_rate"`
+	Duration    *string  `yaml:"duration"`
+	MaxInFlight *int     `yaml:"max_in_flight"`
 }
 
 type fileSafety struct {
-	MaxConcurrency *int `yaml:"max_concurrency"`
-	MaxRequests    *int `yaml:"max_requests"`
+	MaxConcurrency *int     `yaml:"max_concurrency"`
+	MaxRequests    *int     `yaml:"max_requests"`
+	MaxRequestRate *float64 `yaml:"max_request_rate"`
+	MaxInFlight    *int     `yaml:"max_in_flight"`
 }
 
 // Load applies a YAML file, when provided, over the built-in defaults.
@@ -124,9 +134,11 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.Concurrency != nil {
 		resolved.Benchmark.Concurrency = *raw.Benchmark.Concurrency
+		resolved.Benchmark.supplied.Concurrency = true
 	}
 	if raw.Benchmark.Requests != nil {
 		resolved.Benchmark.Requests = *raw.Benchmark.Requests
+		resolved.Benchmark.supplied.Requests = true
 	}
 	if raw.Benchmark.WarmupRequests != nil {
 		resolved.Benchmark.WarmupRequests = *raw.Benchmark.WarmupRequests
@@ -136,6 +148,35 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.Safety.MaxRequests != nil {
 		resolved.Benchmark.Safety.MaxRequests = *raw.Benchmark.Safety.MaxRequests
+	}
+	if raw.Benchmark.Mode != nil {
+		resolved.Benchmark.Mode = *raw.Benchmark.Mode
+		resolved.Benchmark.supplied.Mode = true
+	}
+	if raw.Benchmark.OpenLoop != nil {
+		resolved.Benchmark.supplied.OpenLoopBlock = true
+		if raw.Benchmark.OpenLoop.RequestRate != nil {
+			resolved.Benchmark.OpenLoop.RequestRate = *raw.Benchmark.OpenLoop.RequestRate
+			resolved.Benchmark.supplied.RequestRate = true
+		}
+		if raw.Benchmark.OpenLoop.Duration != nil {
+			duration, err := time.ParseDuration(*raw.Benchmark.OpenLoop.Duration)
+			if err != nil {
+				return Config{}, fmt.Errorf("benchmark.open_loop.duration: %w", err)
+			}
+			resolved.Benchmark.OpenLoop.Duration = duration
+			resolved.Benchmark.supplied.Duration = true
+		}
+		if raw.Benchmark.OpenLoop.MaxInFlight != nil {
+			resolved.Benchmark.OpenLoop.MaxInFlight = *raw.Benchmark.OpenLoop.MaxInFlight
+			resolved.Benchmark.supplied.MaxInFlight = true
+		}
+	}
+	if raw.Benchmark.Safety.MaxRequestRate != nil {
+		resolved.Benchmark.Safety.MaxRequestRate = *raw.Benchmark.Safety.MaxRequestRate
+	}
+	if raw.Benchmark.Safety.MaxInFlight != nil {
+		resolved.Benchmark.Safety.MaxInFlight = *raw.Benchmark.Safety.MaxInFlight
 	}
 
 	return resolved, nil
