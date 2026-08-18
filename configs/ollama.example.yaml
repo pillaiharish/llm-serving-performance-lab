@@ -15,3 +15,10 @@ runtime:
 
 capture:
   output_dir: "runs"
+
+benchmark:
+  concurrency: 1
+  requests: 1
+  safety:
+    max_concurrency: 256
+    max_requests: 10000
