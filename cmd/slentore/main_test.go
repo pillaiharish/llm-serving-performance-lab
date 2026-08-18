@@ -83,10 +83,10 @@ capture:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 2 || metadata.RequestCounts != (artifacts.RequestCounts{Requested: 1, Attempted: 1, Completed: 1, Successful: 1}) || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 3 || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
-	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
+	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
 	var observation benchmark.RequestObservation
 	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != "" || observation.FinishReason != "stop" || observation.StatusCode != http.StatusOK {
@@ -146,7 +146,7 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	}
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var observation benchmark.RequestObservation
-	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
+	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
 	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != benchmark.ErrNoGeneratedContent.Error() {
 		t.Fatalf("observation error = %q", observation.Error)
@@ -159,8 +159,8 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	if requestMetrics.RunID != observation.RunID || requestMetrics.RequestID != observation.RequestID {
 		t.Fatalf("failure artifact identities differ: observation=(%q, %q), metrics=(%q, %q)", observation.RunID, observation.RequestID, requestMetrics.RunID, requestMetrics.RequestID)
 	}
-	if !strings.Contains(stdout.String(), benchmark.ErrNoGeneratedContent.Error()) {
-		t.Fatalf("summary does not report no-content failure: %q", stdout.String())
+	if !strings.Contains(stdout.String(), "Measured failed:     1") {
+		t.Fatalf("summary does not report measured failure: %q", stdout.String())
 	}
 }
 
@@ -184,7 +184,7 @@ func TestRunBenchPreflightErrorsDoNotCreateArtifacts(t *testing.T) {
 	}
 }
 
-func TestRunBenchConcurrentOverridesAndSchema2Counts(t *testing.T) {
+func TestRunBenchConcurrentOverridesAndSchema3Counts(t *testing.T) {
 	const (
 		requestCount = 7
 		workers      = 3
@@ -258,8 +258,7 @@ benchmark:
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	wantCounts := artifacts.RequestCounts{Requested: 7, Attempted: 7, Completed: 7, Successful: 7}
-	if metadata.RequestCounts != wantCounts || metadata.RequestedConcurrency != 3 || metadata.EffectiveWorkers != 3 || metadata.MaxObservedActive != 3 {
+	if metadata.Measurement.Requested != 7 || metadata.Measurement.Attempted != 7 || metadata.Measurement.Completed != 7 || metadata.Measurement.Successful != 7 || metadata.Measurement.RequestedConcurrency != 3 || metadata.Measurement.EffectiveWorkers != 3 || metadata.Measurement.MaxObservedActive != 3 {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
 	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7}) {
@@ -268,7 +267,7 @@ benchmark:
 	if metadata.ClientDiagnostics.NumCPU <= 0 || metadata.ClientDiagnostics.GOMAXPROCS <= 0 || metadata.ClientDiagnostics.GoVersion == "" || metadata.ClientDiagnostics.GOOS == "" || metadata.ClientDiagnostics.GOARCH == "" {
 		t.Fatalf("client diagnostics = %+v", metadata.ClientDiagnostics)
 	}
-	requestEntries, err := os.ReadDir(filepath.Join(runDirectory, "requests"))
+	requestEntries, err := os.ReadDir(filepath.Join(runDirectory, "measured", "requests"))
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
@@ -342,10 +341,10 @@ func TestRunBenchMixedFailuresAttemptEveryRequest(t *testing.T) {
 	}
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(onlyRunDirectory(t, outputDirectory), "run.json"), &metadata)
-	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.RequestCounts != (artifacts.RequestCounts{Requested: 5, Attempted: 5, Completed: 5, Successful: 4, Failed: 1}) {
+	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.Measurement.Requested != 5 || metadata.Measurement.Attempted != 5 || metadata.Measurement.Completed != 5 || metadata.Measurement.Successful != 4 || metadata.Measurement.Failed != 1 {
 		t.Fatalf("metadata = %+v", metadata)
 	}
-	if metadata.Error != "1 of 5 attempted requests failed" {
+	if metadata.Error != "1 of 5 attempted measured requests failed" {
 		t.Fatalf("run error = %q", metadata.Error)
 	}
 }
@@ -396,10 +395,10 @@ func TestRunBenchCancellationPersistsCollectedSubset(t *testing.T) {
 	if metadata.RunStatus != artifacts.RunStatusCancelled || metadata.Error != context.Canceled.Error() {
 		t.Fatalf("metadata = %+v", metadata)
 	}
-	if metadata.RequestCounts.Requested != 20 || metadata.RequestCounts.Attempted != workers || metadata.RequestCounts.Completed != workers || metadata.RequestCounts.Failed != workers {
-		t.Fatalf("partial counts = %+v", metadata.RequestCounts)
+	if metadata.Measurement.Requested != 20 || metadata.Measurement.Attempted != workers || metadata.Measurement.Completed != workers || metadata.Measurement.Failed != workers {
+		t.Fatalf("partial counts = %+v", metadata.Measurement)
 	}
-	entries, err := os.ReadDir(filepath.Join(runDirectory, "requests"))
+	entries, err := os.ReadDir(filepath.Join(runDirectory, "measured", "requests"))
 	if err != nil || len(entries) != workers {
 		t.Fatalf("partial request directories = %d, err = %v", len(entries), err)
 	}
