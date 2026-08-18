@@ -4,6 +4,46 @@ import "time"
 
 const TokenUsageSourceUnavailable = "not_available"
 
+type LoadMode string
+
+const (
+	LoadModeClosedLoop LoadMode = "closed_loop"
+	LoadModeOpenLoop   LoadMode = "open_loop"
+)
+
+type ArrivalDisposition string
+
+const (
+	ArrivalStarted          ArrivalDisposition = "started"
+	ArrivalClientLimited    ArrivalDisposition = "client_limited"
+	ArrivalSchedulerLimited ArrivalDisposition = "scheduler_limited"
+)
+
+type ArrivalRecord struct {
+	Sequence int          `json:"sequence"`
+	Phase    RequestPhase `json:"phase"`
+
+	ScheduledAt      time.Time `json:"scheduled_at"`
+	ScheduledAfterNS int64     `json:"scheduled_after_ns"`
+
+	Disposition ArrivalDisposition `json:"disposition"`
+	RequestID   *string            `json:"request_id"`
+
+	ActualStartedAt      *time.Time `json:"actual_started_at"`
+	ActualStartedAfterNS *int64     `json:"actual_started_after_ns"`
+	SchedulerLagNS       *int64     `json:"scheduler_lag_ns"`
+}
+
+type ArrivalCounts struct {
+	Planned                      int `json:"planned"`
+	Processed                    int `json:"processed"`
+	Started                      int `json:"started"`
+	ClientLimited                int `json:"client_limited"`
+	SchedulerLimited             int `json:"scheduler_limited"`
+	UnprocessedDueToCancellation int `json:"unprocessed_due_to_cancellation"`
+	MaxObservedInFlight          int `json:"max_observed_in_flight"`
+}
+
 // Request contains the transient workload needed to issue one request. The
 // prompt is intentionally absent from all persisted result types.
 type Request struct {
