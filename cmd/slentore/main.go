@@ -74,6 +74,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	var maxRequests int
 	var warmupRequests int
 	var drainTimeoutText string
+	var modeText string
+	var requestRate float64
+	var durationText string
+	var maxInFlight int
+	var maxRequestRateCeiling float64
+	var maxInFlightCeiling int
 
 	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
 	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
@@ -90,6 +96,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.IntVar(&maxRequests, "max-requests", 0, "client admission ceiling for total requests")
 	flags.IntVar(&warmupRequests, "warmup-requests", 0, "warmup requests to attempt before measurement")
 	flags.StringVar(&drainTimeoutText, "drain-timeout", "", "maximum drain duration after measured admission stops")
+	flags.StringVar(&modeText, "mode", "", "load mode: closed-loop or open-loop")
+	flags.Float64Var(&requestRate, "request-rate", 0, "open-loop offered arrivals per second")
+	flags.StringVar(&durationText, "duration", "", "open-loop measurement duration, such as 30s")
+	flags.IntVar(&maxInFlight, "max-in-flight", 0, "open-loop admitted request bound")
+	flags.Float64Var(&maxRequestRateCeiling, "max-request-rate-ceiling", 0, "open-loop request-rate safety ceiling")
+	flags.IntVar(&maxInFlightCeiling, "max-in-flight-ceiling", 0, "open-loop in-flight safety ceiling")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -163,27 +175,61 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		overrides.DrainTimeout = &drainTimeout
 	}
+	if visited["mode"] {
+		mode, err := parseCLILoadMode(modeText)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: --mode: %v\n", err)
+			return 2
+		}
+		overrides.Mode = &mode
+	}
+	if visited["request-rate"] {
+		overrides.RequestRate = &requestRate
+	}
+	if visited["duration"] {
+		duration, err := time.ParseDuration(durationText)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: --duration: %v\n", err)
+			return 2
+		}
+		overrides.Duration = &duration
+	}
+	if visited["max-in-flight"] {
+		overrides.MaxInFlight = &maxInFlight
+	}
+	if visited["max-request-rate-ceiling"] {
+		overrides.MaxRequestRate = &maxRequestRateCeiling
+	}
+	if visited["max-in-flight-ceiling"] {
+		overrides.MaxInFlightCeiling = &maxInFlightCeiling
+	}
 	resolved.ApplyOverrides(overrides)
 	if err := resolved.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
 		return 2
 	}
 
-	apiKey, err := config.ResolveAPIKey(resolved.Endpoint.APIKeyEnv, lookupEnv)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 2
-	}
 	diagnostics := benchmark.CollectClientDiagnostics()
 	admission, err := benchmark.AdmitRun(benchmark.AdmissionRequest{
-		Concurrency:    resolved.Benchmark.Concurrency,
-		Requests:       resolved.Benchmark.Requests,
-		WarmupRequests: resolved.Benchmark.WarmupRequests,
-		MaxConcurrency: resolved.Benchmark.Safety.MaxConcurrency,
-		MaxRequests:    resolved.Benchmark.Safety.MaxRequests,
+		Mode:               benchmark.LoadMode(resolved.Benchmark.Mode),
+		Concurrency:        resolved.Benchmark.Concurrency,
+		Requests:           resolved.Benchmark.Requests,
+		WarmupRequests:     resolved.Benchmark.WarmupRequests,
+		RequestRate:        resolved.Benchmark.OpenLoop.RequestRate,
+		Duration:           resolved.Benchmark.OpenLoop.Duration,
+		MaxInFlight:        resolved.Benchmark.OpenLoop.MaxInFlight,
+		MaxConcurrency:     resolved.Benchmark.Safety.MaxConcurrency,
+		MaxRequests:        resolved.Benchmark.Safety.MaxRequests,
+		MaxRequestRate:     resolved.Benchmark.Safety.MaxRequestRate,
+		MaxInFlightCeiling: resolved.Benchmark.Safety.MaxInFlight,
 	}, diagnostics)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: client admission rejected: %v\n", err)
+		return 2
+	}
+	apiKey, err := config.ResolveAPIKey(resolved.Endpoint.APIKeyEnv, lookupEnv)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
 	runID, err := benchmark.NewRunID()
@@ -215,6 +261,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	createdAt := time.Now().UTC()
 	coordinator := benchmark.NewLifecycleCoordinator(runner)
 	lifecycleResult, runErr := coordinator.Run(ctx, benchmark.LifecyclePlan{
+		Mode:             admission.Mode,
 		RunID:            runID,
 		RequestTemplate:  requestTemplate,
 		Concurrency:      resolved.Benchmark.Concurrency,
@@ -222,6 +269,11 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		MeasuredRequests: resolved.Benchmark.Requests,
 		RequestTimeout:   resolved.Runtime.Timeout,
 		DrainTimeout:     resolved.Runtime.DrainTimeout,
+		OpenLoop: benchmark.OpenLoopPlan{
+			RequestRate: resolved.Benchmark.OpenLoop.RequestRate,
+			Duration:    resolved.Benchmark.OpenLoop.Duration,
+			MaxInFlight: resolved.Benchmark.OpenLoop.MaxInFlight,
+		},
 	})
 	if lifecycleResult.StartedAt.IsZero() {
 		fmt.Fprintf(stderr, "error: coordinate benchmark run: %v\n", runErr)
@@ -234,19 +286,25 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 
 	runStatus := artifacts.RunStatusCompleted
 	runError := ""
+	runErrorClass := ""
+	loadLimited := lifecycleResult.LoadMode == benchmark.LoadModeOpenLoop && !lifecycleResult.Drain.ParentCancelled && (lifecycleResult.Measurement.ArrivalCounts.ClientLimited > 0 || lifecycleResult.Measurement.ArrivalCounts.SchedulerLimited > 0)
 	if runErr != nil {
 		runStatus = artifacts.RunStatusFailed
 		if errors.Is(runErr, context.Canceled) || (lifecycleResult.Drain.ParentCancelled && !errors.Is(runErr, benchmark.ErrDrainTimeout)) {
 			runStatus = artifacts.RunStatusCancelled
 		}
 		runError = runErr.Error()
+	} else if loadLimited {
+		runStatus = artifacts.RunStatusFailed
+		runError = benchmark.ErrLoadDelivery.Error()
+		runErrorClass = artifacts.ErrorClassLoadDelivery
 	} else if warmupMetadata.Failed > 0 {
 		runStatus = artifacts.RunStatusFailed
 		runError = fmt.Sprintf("%d of %d attempted warmup requests failed", warmupMetadata.Failed, warmupMetadata.Attempted)
 	} else if measurementMetadata.Failed > 0 {
 		runStatus = artifacts.RunStatusFailed
 		runError = fmt.Sprintf("%d of %d attempted measured requests failed", measurementMetadata.Failed, measurementMetadata.Attempted)
-	} else if warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested {
+	} else if lifecycleResult.LoadMode == benchmark.LoadModeClosedLoop && (warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested) {
 		runStatus = artifacts.RunStatusFailed
 		runError = "lifecycle did not attempt every requested warmup and measured request"
 	}
@@ -258,6 +316,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		CreatedAt:                createdAt,
 		RunStatus:                runStatus,
 		Error:                    runError,
+		ErrorClass:               runErrorClass,
 		Model:                    resolved.Endpoint.Model,
 		BaseURL:                  resolved.Endpoint.BaseURL,
 		RequestedMaxOutputTokens: resolved.Request.MaxOutputTokens,
@@ -268,7 +327,10 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		SafetyLimits: artifacts.SafetyLimits{
 			MaxConcurrency: resolved.Benchmark.Safety.MaxConcurrency,
 			MaxRequests:    resolved.Benchmark.Safety.MaxRequests,
+			MaxRequestRate: resolved.Benchmark.Safety.MaxRequestRate,
+			MaxInFlight:    resolved.Benchmark.Safety.MaxInFlight,
 		},
+		Load:              loadMetadata(resolved, admission.PlannedArrivals),
 		ClientDiagnostics: admission.Diagnostics,
 		Lifecycle: artifacts.LifecycleMetadata{
 			StartedAt:   lifecycleResult.StartedAt,
@@ -291,13 +353,13 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		},
 	}
 
-	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).Write(metadata, requestArtifacts)
-	printLifecycleSummary(stdout, runID, lifecycleResult, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr)
+	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, lifecycleArrivals(lifecycleResult))
+	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
 	if artifactErr != nil {
 		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
 		return 1
 	}
-	if runErr != nil || warmupMetadata.Failed > 0 || measurementMetadata.Failed > 0 || warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested {
+	if runErr != nil || loadLimited || warmupMetadata.Failed > 0 || measurementMetadata.Failed > 0 || (lifecycleResult.LoadMode == benchmark.LoadModeClosedLoop && (warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested)) {
 		return 1
 	}
 	return 0
@@ -328,7 +390,7 @@ func slentoreVersion() string {
 
 func printRootUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage: slentore bench [options]")
-	fmt.Fprintln(writer, "Run a closed-loop OpenAI-compatible streaming benchmark.")
+	fmt.Fprintln(writer, "Run a closed-loop or open-loop OpenAI-compatible streaming benchmark.")
 }
 
 func printBenchUsage(writer io.Writer) {
@@ -338,7 +400,7 @@ func printBenchUsage(writer io.Writer) {
 
 func phaseMetadata(result benchmark.PhaseResult) artifacts.PhaseMetadata {
 	attempted := len(result.Completed)
-	return artifacts.PhaseMetadata{
+	metadata := artifacts.PhaseMetadata{
 		Phase:                result.Phase,
 		Status:               result.Status,
 		StartedAt:            result.StartedAt,
@@ -354,6 +416,14 @@ func phaseMetadata(result benchmark.PhaseResult) artifacts.PhaseMetadata {
 		MaxObservedActive:    result.MaxObservedActive,
 		Outcomes:             result.Outcomes,
 	}
+	if result.LoadMode == benchmark.LoadModeOpenLoop {
+		counts := result.ArrivalCounts
+		metadata.Arrivals = &counts
+		metadata.RequestedConcurrency = 0
+		metadata.EffectiveWorkers = 0
+		metadata.MaxObservedActive = 0
+	}
+	return metadata
 }
 
 func lifecycleRequestArtifacts(result benchmark.LifecycleResult) []artifacts.RequestArtifact {
@@ -372,8 +442,62 @@ func lifecycleRequestArtifacts(result benchmark.LifecycleResult) []artifacts.Req
 	return requestArtifacts
 }
 
-func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error) {
+func lifecycleArrivals(result benchmark.LifecycleResult) []benchmark.ArrivalRecord {
+	if result.LoadMode != benchmark.LoadModeOpenLoop {
+		return nil
+	}
+	arrivals := make([]benchmark.ArrivalRecord, 0, len(result.Warmup.Arrivals)+len(result.Measurement.Arrivals))
+	arrivals = append(arrivals, result.Warmup.Arrivals...)
+	arrivals = append(arrivals, result.Measurement.Arrivals...)
+	return arrivals
+}
+
+func loadMetadata(resolved config.Config, plannedArrivals int) artifacts.LoadMetadata {
+	if resolved.Benchmark.Mode == config.LoadModeOpenLoop {
+		return artifacts.LoadMetadata{
+			Mode: benchmark.LoadModeOpenLoop,
+			OpenLoop: &artifacts.OpenLoopLoadMetadata{
+				RequestRate:     resolved.Benchmark.OpenLoop.RequestRate,
+				Duration:        resolved.Benchmark.OpenLoop.Duration.String(),
+				MaxInFlight:     resolved.Benchmark.OpenLoop.MaxInFlight,
+				PlannedArrivals: plannedArrivals,
+			},
+		}
+	}
+	return artifacts.LoadMetadata{
+		Mode: benchmark.LoadModeClosedLoop,
+		ClosedLoop: &artifacts.ClosedLoopLoadMetadata{
+			RequestedConcurrency: resolved.Benchmark.Concurrency,
+			RequestedRequests:    resolved.Benchmark.Requests,
+		},
+	}
+}
+
+func parseCLILoadMode(value string) (config.LoadMode, error) {
+	switch value {
+	case "closed-loop":
+		return config.LoadModeClosedLoop, nil
+	case "open-loop":
+		return config.LoadModeOpenLoop, nil
+	default:
+		return "", fmt.Errorf("must be closed-loop or open-loop")
+	}
+}
+
+func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
 	fmt.Fprintf(writer, "Run:                 %s\n", runID)
+	fmt.Fprintf(writer, "Mode:                %s\n", lifecycle.LoadMode)
+	if lifecycle.LoadMode == benchmark.LoadModeOpenLoop {
+		counts := lifecycle.Measurement.ArrivalCounts
+		fmt.Fprintf(writer, "Request rate:        %g/s\n", load.OpenLoop.RequestRate)
+		fmt.Fprintf(writer, "Duration:            %s\n", load.OpenLoop.Duration)
+		fmt.Fprintf(writer, "Planned arrivals:    %d\n", counts.Planned)
+		fmt.Fprintf(writer, "Processed arrivals:  %d\n", counts.Processed)
+		fmt.Fprintf(writer, "Started requests:    %d\n", counts.Started)
+		fmt.Fprintf(writer, "Client-limited:      %d\n", counts.ClientLimited)
+		fmt.Fprintf(writer, "Scheduler-limited:   %d\n", counts.SchedulerLimited)
+		fmt.Fprintf(writer, "Maximum in flight:   %d\n", counts.MaxObservedInFlight)
+	}
 	fmt.Fprintf(writer, "Warmup requested:    %d\n", warmup.Requested)
 	fmt.Fprintf(writer, "Warmup attempted:    %d\n", warmup.Attempted)
 	fmt.Fprintf(writer, "Warmup successful:   %d\n", warmup.Successful)
@@ -382,11 +506,13 @@ func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.L
 	fmt.Fprintf(writer, "Measured attempted:  %d\n", measurement.Attempted)
 	fmt.Fprintf(writer, "Measured successful: %d\n", measurement.Successful)
 	fmt.Fprintf(writer, "Measured failed:     %d\n", measurement.Failed)
-	fmt.Fprintf(writer, "Concurrency:         %d requested\n", measurement.RequestedConcurrency)
-	fmt.Fprintf(writer, "Warmup workers:      %d effective\n", warmup.EffectiveWorkers)
-	fmt.Fprintf(writer, "Measured workers:    %d effective\n", measurement.EffectiveWorkers)
-	fmt.Fprintf(writer, "Warmup max active:   %d requests\n", warmup.MaxObservedActive)
-	fmt.Fprintf(writer, "Measured max active: %d requests\n", measurement.MaxObservedActive)
+	if lifecycle.LoadMode == benchmark.LoadModeClosedLoop {
+		fmt.Fprintf(writer, "Concurrency:         %d requested\n", measurement.RequestedConcurrency)
+		fmt.Fprintf(writer, "Warmup workers:      %d effective\n", warmup.EffectiveWorkers)
+		fmt.Fprintf(writer, "Measured workers:    %d effective\n", measurement.EffectiveWorkers)
+		fmt.Fprintf(writer, "Warmup max active:   %d requests\n", warmup.MaxObservedActive)
+		fmt.Fprintf(writer, "Measured max active: %d requests\n", measurement.MaxObservedActive)
+	}
 	fmt.Fprintf(writer, "Drain timeout:       %s\n", lifecycle.Drain.Timeout)
 	fmt.Fprintf(writer, "Drain timed out:     %t\n", lifecycle.Drain.TimedOut)
 	fmt.Fprintf(writer, "Drain cancellations: %d requests\n", len(lifecycle.Drain.CancelledRequestIDs))
@@ -394,6 +520,9 @@ func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.L
 	fmt.Fprintf(writer, "Measurement elapsed: %s\n", time.Duration(measurement.ElapsedNS))
 	if runErr != nil {
 		fmt.Fprintf(writer, "Run error:            %s\n", runErr)
+	}
+	if runErrorClass != "" {
+		fmt.Fprintf(writer, "Run error class:      %s\n", runErrorClass)
 	}
 	if measurement.Requested == 1 && measurement.Successful == 1 {
 		var measured *artifacts.RequestArtifact
