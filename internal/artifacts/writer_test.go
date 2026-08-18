@@ -136,6 +136,37 @@ func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 		t.Fatalf("temporary directories remain: %v, err = %v", temporaryDirectories, err)
 	}
 }
+
+func TestWriterPersistsPartialCancelledRun(t *testing.T) {
+	metadata := testRunMetadata(5)
+	metadata.RunStatus = RunStatusCancelled
+	metadata.Error = "context canceled"
+	metadata.RequestedConcurrency = 3
+	metadata.EffectiveWorkers = 3
+	metadata.MaxObservedActive = 2
+	metadata.RequestCounts = RequestCounts{Requested: 5, Attempted: 2, Completed: 2, Failed: 2}
+	requests := []RequestArtifact{
+		testRequestArtifact(metadata.RunID, 2, "context canceled"),
+		testRequestArtifact(metadata.RunID, 1, "context canceled"),
+	}
+
+	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, requests)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var persisted RunMetadata
+	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
+	if persisted.RunStatus != RunStatusCancelled || persisted.Error != "context canceled" || persisted.RequestCounts != metadata.RequestCounts {
+		t.Fatalf("persisted metadata = %+v", persisted)
+	}
+	entries, err := os.ReadDir(filepath.Join(path, "requests"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 2 || entries[0].Name() != "req-000001" || entries[1].Name() != "req-000002" {
+		t.Fatalf("partial request entries = %v", entries)
+	}
+}
 func testRunMetadata(requests int) RunMetadata {
 	started := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
 	return RunMetadata{

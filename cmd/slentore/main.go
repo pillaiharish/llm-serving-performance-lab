@@ -237,6 +237,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 			runStatus = artifacts.RunStatusCancelled
 		}
 		runError = runErr.Error()
+	} else if counts.Failed > 0 {
+		runStatus = artifacts.RunStatusFailed
+		runError = fmt.Sprintf("%d of %d attempted requests failed", counts.Failed, counts.Attempted)
+	} else if counts.Attempted != counts.Requested {
+		runStatus = artifacts.RunStatusFailed
+		runError = fmt.Sprintf("attempted %d of %d requested requests", counts.Attempted, counts.Requested)
 	}
 	promptHash := sha256.Sum256([]byte(resolved.Request.Prompt))
 	metadata := artifacts.RunMetadata{
@@ -306,10 +312,10 @@ func printRunSummary(writer io.Writer, runID string, runResult benchmark.RunResu
 	fmt.Fprintf(writer, "Completed:  %d requests\n", counts.Completed)
 	fmt.Fprintf(writer, "Successful: %d requests\n", counts.Successful)
 	fmt.Fprintf(writer, "Failed:     %d requests\n", counts.Failed)
-	fmt.Fprintf(writer, "Concurrency:%d requested\n", runResult.RequestedConcurrency)
+	fmt.Fprintf(writer, "Concurrency: %d requested\n", runResult.RequestedConcurrency)
 	fmt.Fprintf(writer, "Workers:    %d effective\n", runResult.WorkerCount)
 	fmt.Fprintf(writer, "Max active: %d requests\n", runResult.MaxObservedActive)
-	fmt.Fprintf(writer, "Run elapsed:%s\n", time.Duration(runResult.ElapsedNS))
+	fmt.Fprintf(writer, "Run elapsed: %s\n", time.Duration(runResult.ElapsedNS))
 	if runErr != nil {
 		fmt.Fprintf(writer, "Run error:  %s\n", runErr)
 	}
