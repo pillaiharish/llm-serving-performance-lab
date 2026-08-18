@@ -79,13 +79,17 @@ capture:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
+	if metadata.SchemaVersion != 2 || metadata.RequestCounts != (artifacts.RequestCounts{Requested: 1, Attempted: 1, Completed: 1, Successful: 1}) || metadata.RunStatus != artifacts.RunStatusCompleted {
+		t.Fatalf("unexpected run contract: %+v", metadata)
+	}
+	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
 	var observation benchmark.RequestObservation
-	readJSON(t, filepath.Join(runDirectory, "observation.json"), &observation)
+	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != "" || observation.FinishReason != "stop" || observation.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected observation: %+v", observation)
 	}
-	if observation.RunID != metadata.RunID || observation.RequestID != metadata.RequestID {
-		t.Fatalf("observation identity = (%q, %q), metadata identity = (%q, %q)", observation.RunID, observation.RequestID, metadata.RunID, metadata.RequestID)
+	if observation.RunID != metadata.RunID || observation.RequestID != "req-000001" {
+		t.Fatalf("observation identity = (%q, %q), metadata run ID = %q", observation.RunID, observation.RequestID, metadata.RunID)
 	}
 	if observation.HeadersAfterNS == nil || observation.FirstByteAfterNS == nil || observation.FirstStreamEventAfterNS == nil || observation.FirstContentAfterNS == nil || observation.LastContentAfterNS == nil || observation.CompletedAfterNS == nil {
 		t.Fatalf("observation is missing relative timing evidence: %+v", observation)
@@ -99,11 +103,11 @@ capture:
 		}
 	}
 	var requestMetrics metrics.RequestMetrics
-	readJSON(t, filepath.Join(runDirectory, "metrics.json"), &requestMetrics)
-	if requestMetrics.RunID != metadata.RunID || requestMetrics.RequestID != metadata.RequestID {
-		t.Fatalf("metrics identity = (%q, %q), metadata identity = (%q, %q)", requestMetrics.RunID, requestMetrics.RequestID, metadata.RunID, metadata.RequestID)
+	readJSON(t, filepath.Join(requestDirectory, "metrics.json"), &requestMetrics)
+	if requestMetrics.RunID != metadata.RunID || requestMetrics.RequestID != observation.RequestID {
+		t.Fatalf("metrics identity = (%q, %q), observation identity = (%q, %q)", requestMetrics.RunID, requestMetrics.RequestID, observation.RunID, observation.RequestID)
 	}
-	combined := stdout.String() + readText(t, filepath.Join(runDirectory, "run.json")) + readText(t, filepath.Join(runDirectory, "observation.json")) + readText(t, filepath.Join(runDirectory, "metrics.json"))
+	combined := stdout.String() + readText(t, filepath.Join(runDirectory, "run.json")) + readText(t, filepath.Join(requestDirectory, "observation.json")) + readText(t, filepath.Join(requestDirectory, "metrics.json"))
 	for _, forbidden := range []string{"private CLI prompt", "hello", "MISSING_FROM_TEST"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("output/artifacts contain forbidden value %q", forbidden)
@@ -138,7 +142,8 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	}
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var observation benchmark.RequestObservation
-	readJSON(t, filepath.Join(runDirectory, "observation.json"), &observation)
+	requestDirectory := filepath.Join(runDirectory, "requests", "req-000001")
+	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
 	if observation.Error != benchmark.ErrNoGeneratedContent.Error() {
 		t.Fatalf("observation error = %q", observation.Error)
 	}
@@ -146,7 +151,7 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 		t.Fatalf("failure observation is missing identity or completion offset: %+v", observation)
 	}
 	var requestMetrics metrics.RequestMetrics
-	readJSON(t, filepath.Join(runDirectory, "metrics.json"), &requestMetrics)
+	readJSON(t, filepath.Join(requestDirectory, "metrics.json"), &requestMetrics)
 	if requestMetrics.RunID != observation.RunID || requestMetrics.RequestID != observation.RequestID {
 		t.Fatalf("failure artifact identities differ: observation=(%q, %q), metrics=(%q, %q)", observation.RunID, observation.RequestID, requestMetrics.RunID, requestMetrics.RequestID)
 	}
