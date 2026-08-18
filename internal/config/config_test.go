@@ -10,7 +10,7 @@ import (
 
 func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved := Default()
-	if resolved.Request.MaxOutputTokens != 64 || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 {
+	if resolved.Request.MaxOutputTokens != 64 || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 {
 		t.Fatalf("unexpected defaults: %+v", resolved)
 	}
 
@@ -27,6 +27,67 @@ func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv, Concurrency: &concurrency, Requests: &requests, MaxConcurrency: &maxConcurrency, MaxRequests: &maxRequests, WarmupRequests: &warmupRequests, DrainTimeout: &drainTimeout})
 	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" || resolved.Benchmark.Concurrency != 0 || resolved.Benchmark.Requests != 0 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 0 || resolved.Benchmark.Safety.MaxRequests != 0 || resolved.Runtime.DrainTimeout != 0 {
 		t.Fatalf("explicit zero/empty overrides not applied: %+v", resolved)
+	}
+}
+
+func TestOpenLoopConfigurationIsExplicitAndModeSpecific(t *testing.T) {
+	path := writeConfig(t, `version: 1
+endpoint:
+  base_url: http://127.0.0.1:8000/v1
+  model: test-model
+request:
+  prompt: hello
+benchmark:
+  mode: open_loop
+  warmup_requests: 4
+  open_loop:
+    request_rate: 20
+    duration: 500ms
+    max_in_flight: 16
+  safety:
+    max_requests: 100
+    max_request_rate: 100
+    max_in_flight: 32
+`)
+	resolved, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := resolved.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if resolved.Benchmark.Mode != LoadModeOpenLoop || resolved.Benchmark.OpenLoop.RequestRate != 20 || resolved.Benchmark.OpenLoop.Duration != 500*time.Millisecond || resolved.Benchmark.OpenLoop.MaxInFlight != 16 {
+		t.Fatalf("resolved benchmark = %+v", resolved.Benchmark)
+	}
+
+	for _, content := range []string{
+		`version: 1
+benchmark:
+  open_loop:
+    request_rate: 1
+    duration: 1s
+    max_in_flight: 1
+`,
+		`version: 1
+benchmark:
+  mode: open_loop
+  concurrency: 2
+  open_loop:
+    request_rate: 1
+    duration: 1s
+    max_in_flight: 1
+`,
+	} {
+		invalid, err := Load(writeConfig(t, content))
+		if err != nil {
+			t.Fatalf("Load invalid fixture: %v", err)
+		}
+		invalid.Endpoint.BaseURL = "http://localhost:8000/v1"
+		invalid.Endpoint.Model = "model"
+		invalid.Request.Prompt = "prompt"
+		if err := invalid.Validate(); err == nil {
+			t.Fatal("ambiguous mode configuration unexpectedly validated")
+		}
 	}
 }
 

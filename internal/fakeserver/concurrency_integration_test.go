@@ -210,6 +210,133 @@ func TestLifecycleCoordinatorDrainTimeoutWithRealClientPreservesPartialEvidence(
 	}
 }
 
+func TestOpenLoopLifecycleUsesRealClientAndFakeServer(t *testing.T) {
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 0
+	config.ChunkInterval = 0
+	config.ContentChunks = 1
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	fakeHandler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		fakeHandler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 16
+	transport.MaxIdleConnsPerHost = 16
+	transport.MaxConnsPerHost = 16
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := benchmark.NewLifecycleCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.LifecyclePlan{
+		Mode: benchmark.LoadModeOpenLoop, RunID: "run-open-real-client",
+		RequestTemplate: benchmark.Request{Model: "fake-model", Prompt: "private integration prompt", MaxOutputTokens: 4},
+		WarmupRequests:  4, RequestTimeout: time.Second, DrainTimeout: time.Second,
+		OpenLoop: benchmark.OpenLoopPlan{RequestRate: 20, Duration: 500 * time.Millisecond, MaxInFlight: 16},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls.Load() != 14 || result.Warmup.ArrivalCounts.Started != 4 || result.Measurement.ArrivalCounts.Planned != 10 || result.Measurement.ArrivalCounts.Started != 10 || result.Measurement.ArrivalCounts.ClientLimited != 0 || result.Measurement.ArrivalCounts.SchedulerLimited != 0 {
+		t.Fatalf("calls/results = %d/%+v/%+v", calls.Load(), result.Warmup.ArrivalCounts, result.Measurement.ArrivalCounts)
+	}
+	if result.Warmup.CompletedAt == nil || result.Measurement.StartedAt == nil || result.Measurement.StartedAt.Before(*result.Warmup.CompletedAt) {
+		t.Fatalf("open-loop phases overlap: warmup=%+v measurement=%+v", result.Warmup, result.Measurement)
+	}
+	for _, arrival := range append(append([]benchmark.ArrivalRecord{}, result.Warmup.Arrivals...), result.Measurement.Arrivals...) {
+		if arrival.Disposition != benchmark.ArrivalStarted || arrival.RequestID == nil || arrival.ActualStartedAt == nil || arrival.SchedulerLagNS == nil || *arrival.SchedulerLagNS < 0 {
+			t.Fatalf("arrival evidence = %+v", arrival)
+		}
+	}
+}
+
+func TestOpenLoopRealClientIsClientLimitedWithoutQueue(t *testing.T) {
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 200 * time.Millisecond
+	config.FirstContentDelay = 0
+	config.ChunkInterval = 0
+	config.ContentChunks = 1
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	fakeHandler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		fakeHandler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 2
+	transport.MaxIdleConnsPerHost = 2
+	transport.MaxConnsPerHost = 2
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := benchmark.NewLifecycleCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.LifecyclePlan{
+		Mode: benchmark.LoadModeOpenLoop, RunID: "run-open-pressure",
+		RequestTemplate: benchmark.Request{Model: "fake-model", Prompt: "private integration prompt", MaxOutputTokens: 4},
+		RequestTimeout:  time.Second, DrainTimeout: time.Second,
+		OpenLoop: benchmark.OpenLoopPlan{RequestRate: 100, Duration: 100 * time.Millisecond, MaxInFlight: 2},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	counts := result.Measurement.ArrivalCounts
+	if calls.Load() != 2 || counts.Planned != 10 || counts.Started != 2 || counts.ClientLimited != 8 || counts.SchedulerLimited != 0 || counts.MaxObservedInFlight != 2 {
+		t.Fatalf("calls/counts = %d/%+v", calls.Load(), counts)
+	}
+}
+
+func TestOpenLoopRealClientDrainTimeoutCancelsOutstandingRequests(t *testing.T) {
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 500 * time.Millisecond
+	fakeHandler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	server := httptest.NewServer(fakeHandler)
+	defer server.Close()
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 2
+	transport.MaxIdleConnsPerHost = 2
+	transport.MaxConnsPerHost = 2
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	result, err := benchmark.NewLifecycleCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.LifecyclePlan{
+		Mode: benchmark.LoadModeOpenLoop, RunID: "run-open-drain-timeout",
+		RequestTemplate: benchmark.Request{Model: "fake-model", Prompt: "private integration prompt", MaxOutputTokens: 4},
+		RequestTimeout:  2 * time.Second, DrainTimeout: 30 * time.Millisecond,
+		OpenLoop: benchmark.OpenLoopPlan{RequestRate: 20, Duration: 100 * time.Millisecond, MaxInFlight: 2},
+	})
+	if !errors.Is(err, benchmark.ErrDrainTimeout) {
+		t.Fatalf("Run error = %v, want drain timeout", err)
+	}
+	counts := result.Measurement.ArrivalCounts
+	if !result.Drain.TimedOut || counts.Planned != 2 || counts.Started != 2 || counts.ClientLimited != 0 || result.Measurement.Outcomes.DrainTimeout != 2 || len(result.Drain.CancelledRequestIDs) != 2 {
+		t.Fatalf("drain-timeout result = %+v", result)
+	}
+}
+
 func assertLifecycleIDs(t *testing.T, completed []benchmark.CompletedRequest, prefix string) {
 	t.Helper()
 	seen := make(map[string]struct{}, len(completed))

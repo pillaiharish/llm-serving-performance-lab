@@ -88,7 +88,7 @@ benchmark:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 3 || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 4 || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
 	if metadata.Drain.CancelledRequestIDs == nil {
@@ -192,7 +192,7 @@ func TestRunBenchPreflightErrorsDoNotCreateArtifacts(t *testing.T) {
 	}
 }
 
-func TestRunBenchConcurrentOverridesAndSchema3Counts(t *testing.T) {
+func TestRunBenchConcurrentOverridesAndSchema4Counts(t *testing.T) {
 	const (
 		requestCount = 7
 		workers      = 3
@@ -269,7 +269,7 @@ benchmark:
 	if metadata.Measurement.Requested != 7 || metadata.Measurement.Attempted != 7 || metadata.Measurement.Completed != 7 || metadata.Measurement.Successful != 7 || metadata.Measurement.RequestedConcurrency != 3 || metadata.Measurement.EffectiveWorkers != 3 || metadata.Measurement.MaxObservedActive != 3 {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7}) {
+	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7, MaxRequestRate: 10000, MaxInFlight: 256}) {
 		t.Fatalf("safety limits = %+v", metadata.SafetyLimits)
 	}
 	if metadata.ClientDiagnostics.NumCPU <= 0 || metadata.ClientDiagnostics.GOMAXPROCS <= 0 || metadata.ClientDiagnostics.GoVersion == "" || metadata.ClientDiagnostics.GOOS == "" || metadata.ClientDiagnostics.GOARCH == "" {
@@ -540,6 +540,182 @@ func TestRunRejectsDirectAPIKeyFlag(t *testing.T) {
 	exitCode := run([]string{"bench", "--api-key", "secret"}, &stdout, &stderr, os.LookupEnv)
 	if exitCode != 2 || !strings.Contains(stderr.String(), "flag provided but not defined") {
 		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
+	fixture := normalCLIFixture("private-open-loop-content")
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(writer, fixture)
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "private-open-loop-prompt",
+		"--mode", "open-loop", "--request-rate", "20", "--duration", "250ms", "--max-in-flight", "16",
+		"--timeout", "2s", "--drain-timeout", "1s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exitCode != 0 {
+		t.Fatalf("exit = %d, stderr = %q, stdout = %q", exitCode, stderr.String(), stdout.String())
+	}
+	if calls.Load() != 5 {
+		t.Fatalf("calls = %d, want 5", calls.Load())
+	}
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	if metadata.SchemaVersion != 4 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
+		t.Fatalf("open-loop metadata = %+v", metadata)
+	}
+	counts := *metadata.Measurement.Arrivals
+	if counts.Planned != 5 || counts.Processed != 5 || counts.Started != 5 || counts.ClientLimited != 0 || counts.SchedulerLimited != 0 || counts.MaxObservedInFlight > 16 || metadata.RunStatus != artifacts.RunStatusCompleted || metadata.StopAdmission.Reason != "measurement_duration_elapsed" {
+		t.Fatalf("arrival metadata = %+v, run status = %s", counts, metadata.RunStatus)
+	}
+	arrivalText := strings.TrimSpace(readText(t, filepath.Join(runDirectory, "measured", "arrivals.jsonl")))
+	if len(strings.Split(arrivalText, "\n")) != 5 {
+		t.Fatalf("arrival JSONL = %q", arrivalText)
+	}
+	if warmupText := readText(t, filepath.Join(runDirectory, "warmup", "arrivals.jsonl")); warmupText != "" {
+		t.Fatalf("skipped warmup arrivals = %q", warmupText)
+	}
+	for sequence := 1; sequence <= 5; sequence++ {
+		requestID, _ := benchmark.RequestID(sequence)
+		var observation benchmark.RequestObservation
+		readJSON(t, filepath.Join(runDirectory, "measured", "requests", requestID, "observation.json"), &observation)
+		if observation.RequestStartedAt == nil {
+			t.Fatalf("request %s lacks start evidence", requestID)
+		}
+	}
+	combined := stdout.String() + readTreeText(t, runDirectory)
+	for _, forbidden := range []string{"private-open-loop-prompt", "private-open-loop-content"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("open-loop output contains forbidden value %q", forbidden)
+		}
+	}
+	for _, required := range []string{"Mode:                open_loop", "Request rate:        20/s", "Planned arrivals:    5", "Client-limited:      0"} {
+		if !strings.Contains(stdout.String(), required) {
+			t.Fatalf("summary %q lacks %q", stdout.String(), required)
+		}
+	}
+}
+
+func TestRunBenchOpenLoopClientLimitedFailsWithoutQueueing(t *testing.T) {
+	fixture := normalCLIFixture("pressure-content")
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		timer := time.NewTimer(200 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			_, _ = io.WriteString(writer, fixture)
+		case <-request.Context().Done():
+		}
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "pressure-prompt",
+		"--mode", "open-loop", "--request-rate", "100", "--duration", "100ms", "--max-in-flight", "2",
+		"--timeout", "2s", "--drain-timeout", "1s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exitCode != 1 {
+		t.Fatalf("exit = %d, stderr = %q, stdout = %q", exitCode, stderr.String(), stdout.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2 admitted requests and no catch-up", calls.Load())
+	}
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	counts := metadata.Measurement.Arrivals
+	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.ErrorClass != artifacts.ErrorClassLoadDelivery || counts == nil || counts.Planned != 10 || counts.Started != 2 || counts.ClientLimited != 8 || counts.SchedulerLimited != 0 || counts.MaxObservedInFlight != 2 {
+		t.Fatalf("pressure metadata = %+v", metadata)
+	}
+	if !strings.Contains(stdout.String(), "Run error class:      load_delivery_error") {
+		t.Fatalf("summary = %q", stdout.String())
+	}
+}
+
+func TestRunBenchOpenLoopCancellationPersistsUnprocessedCount(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		once.Do(func() { close(started) })
+		select {
+		case <-request.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-started:
+			cancel()
+		case <-time.After(5 * time.Second):
+			cancel()
+		}
+	}()
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := runContext(ctx, []string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "cancel-prompt",
+		"--mode", "open-loop", "--request-rate", "100", "--duration", "1s", "--max-in-flight", "4",
+		"--timeout", "2s", "--drain-timeout", "1s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	close(release)
+	if exitCode != 1 {
+		t.Fatalf("exit = %d, stderr = %q, stdout = %q", exitCode, stderr.String(), stdout.String())
+	}
+	var metadata artifacts.RunMetadata
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	counts := metadata.Measurement.Arrivals
+	if metadata.RunStatus != artifacts.RunStatusCancelled || metadata.Error != context.Canceled.Error() || counts == nil || counts.Planned != 100 || counts.Processed+counts.UnprocessedDueToCancellation != counts.Planned || counts.UnprocessedDueToCancellation == 0 {
+		t.Fatalf("cancellation metadata = %+v", metadata)
+	}
+	if lines := strings.TrimSpace(readText(t, filepath.Join(runDirectory, "measured", "arrivals.jsonl"))); lines == "" {
+		t.Fatal("processed cancellation arrival was not persisted")
+	}
+}
+
+func TestRunBenchRejectsAmbiguousOrUnsafeOpenLoopBeforeArtifacts(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "mode not inferred", args: []string{"--request-rate", "10", "--duration", "1s", "--max-in-flight", "2"}, want: "incompatible"},
+		{name: "closed fields in open mode", args: []string{"--mode", "open-loop", "--request-rate", "10", "--duration", "1s", "--max-in-flight", "2", "--requests", "10"}, want: "incompatible"},
+		{name: "rate ceiling", args: []string{"--mode", "open-loop", "--request-rate", "101", "--duration", "1s", "--max-in-flight", "2", "--max-request-rate-ceiling", "100"}, want: "exceeds"},
+		{name: "planned ceiling", args: []string{"--mode", "open-loop", "--request-rate", "100", "--duration", "2s", "--max-in-flight", "2", "--max-requests", "100"}, want: "planned arrivals"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			outputDirectory := filepath.Join(t.TempDir(), "runs")
+			args := []string{"bench", "--base-url", "http://127.0.0.1:1/v1", "--model", "model", "--prompt", "prompt", "--output-dir", outputDirectory}
+			args = append(args, test.args...)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			if exitCode := run(args, &stdout, &stderr, os.LookupEnv); exitCode != 2 || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("exit = %d, stderr = %q", exitCode, stderr.String())
+			}
+			if _, err := os.Stat(outputDirectory); !os.IsNotExist(err) {
+				t.Fatalf("preflight created artifacts: %v", err)
+			}
+		})
 	}
 }
 
