@@ -4,10 +4,10 @@ This repository contains **Slentore**, a Go benchmark harness for studying LLM
 serving performance from raw client-side timing evidence.
 
 Slentore implements a production-quality streaming OpenAI-compatible Chat
-Completions request primitive and a fixed-concurrency, closed-loop coordinator
-around it. One invocation runs an optional request-count warmup followed by a
-measured request cohort at one configured concurrency level. Request-rate
-scheduling, duration-based warmup, concurrency sweeps, percentile aggregation,
+Completions request primitive with two explicit load models: fixed-concurrency
+closed-loop work and wall-clock open-loop request-rate scheduling. One
+invocation runs an optional request-count warmup followed by one measured
+cohort. Duration-based warmup, concurrency sweeps, percentile aggregation,
 deployment, and observability remain outside this version.
 
 The original local single-GPU learning series remains unchanged under
@@ -50,12 +50,15 @@ capture:
   output_dir: "runs"
 
 benchmark:
+  mode: closed_loop
   concurrency: 1
   requests: 1
   warmup_requests: 0
   safety:
     max_concurrency: 256
     max_requests: 10000
+    max_request_rate: 10000
+    max_in_flight: 256
 ```
 
 `base_url` is the OpenAI API root. Slentore removes a trailing slash and
@@ -70,15 +73,19 @@ built-in defaults < YAML < explicitly supplied CLI flags
 
 The built-in defaults are 64 maximum output tokens, temperature 0, a 120
 second per-request timeout, a separate 120 second drain timeout, the `runs`
-output directory, concurrency 1, zero warmup requests, one measured request,
-maximum concurrency 256, and maximum requests 10,000. Base URL, model, and
-prompt must be supplied by YAML and/or flags.
+output directory, closed-loop mode, concurrency 1, zero warmup requests, one
+measured request, maximum concurrency 256, maximum requests 10,000, maximum
+request rate 10,000/s, and maximum in-flight 256. Base URL, model, and prompt
+must be supplied by YAML and/or flags.
 
 Requested concurrency and measured request count must be positive; warmup may
 be zero. Warmup and measured counts are each checked independently against
 `max_requests`, and concurrency is checked against `max_concurrency`. Slentore
 rejects an over-limit run and never silently clamps it. Explicitly raising
 `--max-concurrency` or `--max-requests` permits a larger intentional run.
+Open-loop rate and in-flight admission are likewise checked against
+`max_request_rate` and the safety `max_in_flight`; their CLI ceiling overrides
+are `--max-request-rate-ceiling` and `--max-in-flight-ceiling`.
 Admission records the client's CPU count, `GOMAXPROCS`, Go version, operating
 system, and architecture as diagnostics, but does not infer a capacity limit
 from them.
@@ -126,6 +133,7 @@ build/slentore bench \
   --drain-timeout 120s \
   --output-dir runs \
   --api-key-env "" \
+  --mode closed-loop \
   --concurrency 4 \
   --warmup-requests 4 \
   --requests 16 \
@@ -151,7 +159,7 @@ the terminal or accumulated in memory. With the default zero warmup,
 `concurrency: 1`, and `requests: 1`, behavior remains compatible with the
 original single-request invocation and its detailed scalar terminal summary.
 
-## Benchmark lifecycle and closed-loop concurrency
+## Benchmark lifecycle and load models
 
 Each admitted invocation follows one centralized lifecycle:
 
@@ -211,6 +219,65 @@ connections are closed after the run. Workers perform no file I/O and never
 send SSE or token events through coordinator channels; the coordinator
 collects one completed result per attempted request in memory. The default
 10,000-request ceiling bounds each cohort unless explicitly raised.
+
+### Open-loop request rate
+
+Open-loop mode offers arrivals from a wall-clock schedule independent of
+request completion:
+
+```yaml
+benchmark:
+  mode: open_loop
+  warmup_requests: 4
+  open_loop:
+    request_rate: 20
+    duration: "30s"
+    max_in_flight: 256
+  safety:
+    max_concurrency: 256
+    max_requests: 10000
+    max_request_rate: 10000
+    max_in_flight: 256
+```
+
+The CLI spelling is `--mode open-loop`, with `--request-rate`, `--duration`,
+and `--max-in-flight`. Closed-loop flags are rejected in open-loop mode and
+open-loop flags are rejected in closed-loop mode; Slentore never infers a mode
+from an otherwise ambiguous combination.
+
+For one-based arrival `i`, rate `R`, and measurement epoch `T0`, the target is
+`T0 + (i-1)/R`. Every target is derived from `T0`, so timer wake-up delays do
+not accumulate into the next target. Targets strictly before `T0 + duration`
+are planned, giving `ceil(R × duration_seconds)` arrivals. The first target is
+at `T0`; fractional rates use nanosecond offsets rounded down from the direct
+formula.
+
+At a target, Slentore performs a non-blocking in-flight admission check. An
+admitted arrival starts one request goroutine. If the configured
+`max_in_flight` guard is full, the arrival is `client_limited` and is never
+queued or started later. If the local scheduler cannot process a planned
+arrival before the measurement deadline, it is `scheduler_limited` and is not
+burst-started after the window. `max_in_flight` is a client protection bound,
+not target concurrency.
+
+Started arrivals retain their scheduled wall time, phase-relative offset,
+actual `request_started_at`, and scheduler lag. Scheduler lag is the actual
+request start minus the scheduled target, calculated while Go's monotonic time
+evidence is available. Dropped arrivals have null request/start/lag fields and
+no request artifact; resulting request-ID gaps preserve offered-arrival
+identity.
+
+Open-loop warmup offers exactly `warmup_requests` at the same request rate and
+with the same in-flight guard. It drains completely before a fresh measurement
+epoch. Measurement stops admission exactly at `T0 + duration`; already
+admitted requests then drain normally. A normal measurement containing either
+limited disposition writes its evidence and exits non-zero with
+`load_delivery_error`.
+
+Little's Law suggests that expected in-flight work is approximately arrival
+rate multiplied by average request duration. This is an analytical
+relationship, not a safety guarantee; choose
+and explicitly admit a suitable `max_in_flight` ceiling.
 
 The terminal summary reports separate warmup and measurement requested,
 attempted, successful, and failed counts; requested concurrency; both phase
@@ -410,11 +477,13 @@ runs/
 └── 20260816T120501Z-a31f00ff/
     ├── run.json
     ├── warmup/
+    │   ├── arrivals.jsonl       # open-loop only
     │   └── requests/
     │       └── warmup-000001/
     │           ├── observation.json
     │           └── metrics.json
     └── measured/
+        ├── arrivals.jsonl       # open-loop only
         └── requests/
             ├── req-000001/
             │   ├── observation.json
@@ -426,12 +495,16 @@ runs/
 
 - Both request roots are always created, including an empty `warmup/requests`
   directory when warmup is skipped.
-- `run.json` is artifact schema version 3. It retains safe workload, build,
+- `run.json` is artifact schema version 4. It retains explicit load mode and
+  mode-specific configuration, safe workload, build,
   endpoint, prompt hash/length, safety, and client diagnostics. It adds ordered
   lifecycle transitions; explicit stop-admission wall/relative evidence;
   separate phase status, timing, counts, concurrency, and mutually exclusive
   outcome totals; drain timing, timeout/cancellation state and affected IDs;
   and the overall completed, failed, or canceled status and error.
+- Open-loop `arrivals.jsonl` files retain safe scheduling/admission evidence
+  and counts for started, client-limited, scheduler-limited, and cancellation-
+  unprocessed arrivals. Closed-loop schema-4 runs omit arrival files.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
   request-relative nanosecond offsets, event evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
@@ -443,8 +516,7 @@ request sequence, validates phase-specific identities, ranges, duplicates,
 counts and outcome totals, stages the complete tree, and atomically renames it
 only after every file has been written. Metric derivation and filesystem work
 happen after drain. Warmup observations are never mixed into the measured
-cohort. Historical committed schema-1 and previously generated schema-2
-evidence remain unchanged.
+cohort. Historical schema-1, schema-2, and schema-3 evidence remain unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
@@ -479,12 +551,11 @@ go test -race ./...
 
 ## Current scope
 
-This version runs one optional request-count warmup and one finite measured
-cohort at a single fixed concurrency level. It contains no QPS scheduler,
-warmup-duration control, concurrency sweep, run-level percentile or throughput
-aggregation, tokenizer workload generator, database, GPU discovery, deployment
-automation, or observability integration. The lifecycle coordinator reuses the
-existing `Runner.RunRequest` primitive without changing how an individual
-request is observed or how its metrics are calculated. The fake server provides
-controlled HTTP/SSE validation; it does not simulate GPU, model, tokenizer, or
-vLLM capacity behavior.
+This version runs one optional request-count warmup and one measured closed- or
+open-loop cohort. It contains no warmup-duration control, load sweep, run-level
+percentile or throughput aggregation, tokenizer workload generator, database,
+GPU discovery, deployment automation, or observability integration. The
+lifecycle coordinator reuses the existing `Runner.RunRequest` primitive
+without changing how an individual request is observed or how its metrics are
+calculated. The fake server provides controlled HTTP/SSE validation; it does
+not simulate GPU, model, tokenizer, or vLLM capacity behavior.
