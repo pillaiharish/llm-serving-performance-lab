@@ -17,6 +17,7 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/fakeserver"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 )
 
@@ -85,10 +86,10 @@ benchmark:
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.PromptBytes != len("private CLI prompt") {
+	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.Workload.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 4 || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 5 || metadata.Workload.Mode != "prompt" || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
 	if metadata.Drain.CancelledRequestIDs == nil {
@@ -269,7 +270,7 @@ benchmark:
 	if metadata.Measurement.Requested != 7 || metadata.Measurement.Attempted != 7 || metadata.Measurement.Completed != 7 || metadata.Measurement.Successful != 7 || metadata.Measurement.RequestedConcurrency != 3 || metadata.Measurement.EffectiveWorkers != 3 || metadata.Measurement.MaxObservedActive != 3 {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7, MaxRequestRate: 10000, MaxInFlight: 256}) {
+	if metadata.SafetyLimits != (artifacts.SafetyLimits{MaxConcurrency: 3, MaxRequests: 7, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768}) {
 		t.Fatalf("safety limits = %+v", metadata.SafetyLimits)
 	}
 	if metadata.ClientDiagnostics.NumCPU <= 0 || metadata.ClientDiagnostics.GOMAXPROCS <= 0 || metadata.ClientDiagnostics.GoVersion == "" || metadata.ClientDiagnostics.GOOS == "" || metadata.ClientDiagnostics.GOARCH == "" {
@@ -569,7 +570,7 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	if metadata.SchemaVersion != 4 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
+	if metadata.SchemaVersion != 5 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
 		t.Fatalf("open-loop metadata = %+v", metadata)
 	}
 	counts := *metadata.Measurement.Arrivals
@@ -601,6 +602,148 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("summary %q lacks %q", stdout.String(), required)
 		}
+	}
+}
+
+func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		args         []string
+		wantRequests int64
+	}{
+		{name: "closed-loop", args: []string{"--concurrency", "4", "--requests", "16", "--warmup-requests", "2"}, wantRequests: 18},
+		{name: "open-loop", args: []string{"--mode", "open-loop", "--request-rate", "20", "--duration", "250ms", "--max-in-flight", "8", "--warmup-requests", "2"}, wantRequests: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serverConfig := fakeserver.DefaultConfig()
+			serverConfig.Listen = "127.0.0.1:18080"
+			serverConfig.HeaderDelay = 0
+			serverConfig.FirstContentDelay = 0
+			serverConfig.ChunkInterval = 0
+			serverConfig.UsageDelay = 0
+			serverConfig.DoneDelay = 0
+			serverConfig.TokenizerFixture = true
+			handler, err := fakeserver.NewHandler(serverConfig)
+			if err != nil {
+				t.Fatalf("NewHandler: %v", err)
+			}
+			var tokenizerCalls atomic.Int64
+			var requestCalls atomic.Int64
+			var callsAtFirstRequest atomic.Int64
+			callsAtFirstRequest.Store(-1)
+			prompts := make(map[string]struct{})
+			var promptsMu sync.Mutex
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/tokenize" {
+					tokenizerCalls.Add(1)
+				} else if request.URL.Path == "/v1/chat/completions" {
+					callsAtFirstRequest.CompareAndSwap(-1, tokenizerCalls.Load())
+					requestCalls.Add(1)
+					body, readErr := io.ReadAll(request.Body)
+					if readErr != nil {
+						t.Errorf("read request: %v", readErr)
+					} else {
+						request.Body = io.NopCloser(bytes.NewReader(body))
+						var payload struct {
+							Messages []struct {
+								Content string `json:"content"`
+							} `json:"messages"`
+							MaxTokens int `json:"max_tokens"`
+						}
+						if err := json.Unmarshal(body, &payload); err != nil || len(payload.Messages) != 1 || payload.MaxTokens != 32 {
+							t.Errorf("request payload = %+v, err=%v", payload, err)
+						} else {
+							promptsMu.Lock()
+							prompts[payload.Messages[0].Content] = struct{}{}
+							promptsMu.Unlock()
+						}
+					}
+				}
+				handler.ServeHTTP(writer, request)
+			}))
+			defer server.Close()
+
+			outputDirectory := filepath.Join(t.TempDir(), "runs")
+			args := []string{"bench", "--base-url", server.URL + "/v1", "--model", "fixture-model", "--workload-mode", "token-length", "--input-tokens", "128", "--tokenizer-adapter", "vllm", "--tokenizer-url", server.URL + "/tokenize", "--max-output-tokens", "32", "--timeout", "2s", "--drain-timeout", "1s", "--output-dir", outputDirectory}
+			args = append(args, test.args...)
+			var stdout, stderr bytes.Buffer
+			if exit := run(args, &stdout, &stderr, os.LookupEnv); exit != 0 {
+				t.Fatalf("exit=%d stderr=%q stdout=%q", exit, stderr.String(), stdout.String())
+			}
+			if requestCalls.Load() != test.wantRequests || callsAtFirstRequest.Load() <= 0 || tokenizerCalls.Load() != callsAtFirstRequest.Load() {
+				t.Fatalf("requests=%d tokenizer calls=%d first-request calls=%d", requestCalls.Load(), tokenizerCalls.Load(), callsAtFirstRequest.Load())
+			}
+			promptsMu.Lock()
+			if len(prompts) != 1 {
+				t.Fatalf("unique prompts = %d", len(prompts))
+			}
+			var generatedPrompt string
+			for prompt := range prompts {
+				generatedPrompt = prompt
+			}
+			promptsMu.Unlock()
+
+			runDirectory := onlyRunDirectory(t, outputDirectory)
+			var metadata artifacts.RunMetadata
+			readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+			if metadata.SchemaVersion != 5 || metadata.Workload.Mode != "token_length" || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != 128 || metadata.Workload.Input.ResolvedTokens != 128 || metadata.Workload.Tokenizer == nil || metadata.Workload.Tokenizer.Contract != "rendered_chat_input" || len(metadata.Workload.Tokenizer.BehavioralFingerprintSHA256) != 64 {
+				t.Fatalf("workload metadata = %+v", metadata.Workload)
+			}
+			if text := readText(t, filepath.Join(runDirectory, "run.json")); strings.Contains(text, generatedPrompt) || strings.Contains(text, "private-key") {
+				t.Fatal("run metadata persisted transient workload or secret")
+			}
+			if !strings.Contains(stdout.String(), "Input resolved:      128 tokens") || strings.Contains(stdout.String(), generatedPrompt) {
+				t.Fatalf("unsafe or incomplete summary: %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestTokenLengthPreparationCompletesBeforeLifecycleTiming(t *testing.T) {
+	serverConfig := fakeserver.DefaultConfig()
+	serverConfig.HeaderDelay = 0
+	serverConfig.FirstContentDelay = 5 * time.Millisecond
+	serverConfig.ChunkInterval = 0
+	serverConfig.UsageDelay = 0
+	serverConfig.DoneDelay = 0
+	serverConfig.TokenizerFixture = true
+	handler, err := fakeserver.NewHandler(serverConfig)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	var lastTokenizerResponse atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/tokenize" {
+			time.Sleep(15 * time.Millisecond)
+			handler.ServeHTTP(writer, request)
+			lastTokenizerResponse.Store(time.Now().UnixNano())
+			return
+		}
+		handler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "fixture-model",
+		"--workload-mode", "token-length", "--input-tokens", "64", "--tokenizer-adapter", "vllm", "--tokenizer-url", server.URL + "/tokenize",
+		"--max-output-tokens", "16", "--concurrency", "1", "--requests", "1", "--timeout", "2s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%q stdout=%q", exit, stderr.String(), stdout.String())
+	}
+	lastTokenization := time.Unix(0, lastTokenizerResponse.Load())
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	var observation benchmark.RequestObservation
+	readJSON(t, filepath.Join(runDirectory, "measured", "requests", "req-000001", "observation.json"), &observation)
+	if !metadata.Lifecycle.StartedAt.After(lastTokenization) || observation.RequestStartedAt == nil || !observation.RequestStartedAt.After(lastTokenization) {
+		t.Fatalf("tokenization=%s lifecycle=%s request=%v", lastTokenization, metadata.Lifecycle.StartedAt, observation.RequestStartedAt)
+	}
+	if observation.FirstContentAfterNS == nil || *observation.FirstContentAfterNS >= (100*time.Millisecond).Nanoseconds() {
+		t.Fatalf("request timing includes preflight delay: %+v", observation)
 	}
 }
 

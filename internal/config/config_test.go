@@ -10,7 +10,7 @@ import (
 
 func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved := Default()
-	if resolved.Request.MaxOutputTokens != 64 || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 {
+	if resolved.Request.MaxOutputTokens != 64 || resolved.Workload.Mode != WorkloadModePrompt || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 || resolved.Benchmark.Safety.MaxInputTokens != 131072 || resolved.Benchmark.Safety.MaxOutputTokens != 32768 {
 		t.Fatalf("unexpected defaults: %+v", resolved)
 	}
 
@@ -27,6 +27,68 @@ func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv, Concurrency: &concurrency, Requests: &requests, MaxConcurrency: &maxConcurrency, MaxRequests: &maxRequests, WarmupRequests: &warmupRequests, DrainTimeout: &drainTimeout})
 	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" || resolved.Benchmark.Concurrency != 0 || resolved.Benchmark.Requests != 0 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 0 || resolved.Benchmark.Safety.MaxRequests != 0 || resolved.Runtime.DrainTimeout != 0 {
 		t.Fatalf("explicit zero/empty overrides not applied: %+v", resolved)
+	}
+}
+
+func TestTokenLengthWorkloadConfigurationIsExplicitAndModeSpecific(t *testing.T) {
+	path := writeConfig(t, `version: 1
+endpoint:
+  base_url: http://127.0.0.1:8000/v1
+  model: test-model
+request:
+  max_output_tokens: 32
+workload:
+  mode: token_length
+  input_tokens: 128
+  tokenizer:
+    adapter: vllm
+    url: http://127.0.0.1:8000/tokenize
+benchmark:
+  safety:
+    max_input_tokens: 256
+    max_output_tokens: 64
+`)
+	resolved, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := resolved.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if resolved.Workload.Mode != WorkloadModeTokenLength || resolved.Workload.InputTokens != 128 || resolved.Workload.Tokenizer.Adapter != TokenizerAdapterVLLM || resolved.Benchmark.Safety.MaxInputTokens != 256 || resolved.Benchmark.Safety.MaxOutputTokens != 64 {
+		t.Fatalf("resolved = %+v", resolved)
+	}
+
+	for _, content := range []string{
+		`version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: conflict}
+workload:
+  mode: token_length
+  input_tokens: 8
+  tokenizer: {adapter: vllm, url: http://localhost:8000/tokenize}
+`,
+		`version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: prompt}
+workload:
+  input_tokens: 8
+`,
+		`version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: prompt}
+workload:
+  mode: prompt
+  tokenizer: {adapter: vllm, url: http://localhost:8000/tokenize}
+`,
+	} {
+		candidate, err := Load(writeConfig(t, content))
+		if err != nil {
+			t.Fatalf("Load conflict: %v", err)
+		}
+		if err := candidate.Validate(); err == nil {
+			t.Fatalf("conflicting workload unexpectedly validated: %+v", candidate)
+		}
 	}
 }
 
