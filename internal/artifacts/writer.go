@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -11,9 +12,10 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 const (
 	RunStatusCompleted = "completed"
@@ -24,10 +26,32 @@ const (
 const ErrorClassLoadDelivery = "load_delivery_error"
 
 type SafetyLimits struct {
-	MaxConcurrency int     `json:"max_concurrency"`
-	MaxRequests    int     `json:"max_requests"`
-	MaxRequestRate float64 `json:"max_request_rate"`
-	MaxInFlight    int     `json:"max_in_flight"`
+	MaxConcurrency  int     `json:"max_concurrency"`
+	MaxRequests     int     `json:"max_requests"`
+	MaxRequestRate  float64 `json:"max_request_rate"`
+	MaxInFlight     int     `json:"max_in_flight"`
+	MaxInputTokens  int     `json:"max_input_tokens"`
+	MaxOutputTokens int     `json:"max_output_tokens"`
+}
+
+type WorkloadMetadata struct {
+	Mode         string                      `json:"mode"`
+	Input        *WorkloadInputMetadata      `json:"input,omitempty"`
+	Output       WorkloadOutputMetadata      `json:"output"`
+	Builder      *workload.BuilderIdentity   `json:"builder,omitempty"`
+	PromptBytes  int                         `json:"prompt_bytes"`
+	PromptSHA256 string                      `json:"prompt_sha256"`
+	Tokenizer    *workload.TokenizerIdentity `json:"tokenizer,omitempty"`
+}
+
+type WorkloadInputMetadata struct {
+	Contract       string `json:"contract"`
+	TargetTokens   int    `json:"target_tokens"`
+	ResolvedTokens int    `json:"resolved_tokens"`
+}
+
+type WorkloadOutputMetadata struct {
+	RequestedMaxTokens int `json:"requested_max_tokens"`
 }
 
 type LoadMetadata struct {
@@ -91,28 +115,26 @@ type DrainMetadata struct {
 }
 
 type RunMetadata struct {
-	SchemaVersion            int                         `json:"schema_version"`
-	RunID                    string                      `json:"run_id"`
-	SlentoreVersion          string                      `json:"slentore_version"`
-	CreatedAt                time.Time                   `json:"created_at"`
-	RunStatus                string                      `json:"run_status"`
-	Error                    string                      `json:"error,omitempty"`
-	ErrorClass               string                      `json:"error_class,omitempty"`
-	Model                    string                      `json:"model"`
-	BaseURL                  string                      `json:"base_url"`
-	RequestedMaxOutputTokens int                         `json:"requested_max_output_tokens"`
-	Temperature              float64                     `json:"temperature"`
-	RequestTimeout           string                      `json:"request_timeout"`
-	PromptBytes              int                         `json:"prompt_bytes"`
-	PromptSHA256             string                      `json:"prompt_sha256"`
-	SafetyLimits             SafetyLimits                `json:"safety_limits"`
-	Load                     LoadMetadata                `json:"load"`
-	ClientDiagnostics        benchmark.ClientDiagnostics `json:"client_diagnostics"`
-	Lifecycle                LifecycleMetadata           `json:"lifecycle"`
-	StopAdmission            StopAdmissionMetadata       `json:"stop_admission"`
-	Warmup                   PhaseMetadata               `json:"warmup"`
-	Measurement              PhaseMetadata               `json:"measurement"`
-	Drain                    DrainMetadata               `json:"drain"`
+	SchemaVersion     int                         `json:"schema_version"`
+	RunID             string                      `json:"run_id"`
+	SlentoreVersion   string                      `json:"slentore_version"`
+	CreatedAt         time.Time                   `json:"created_at"`
+	RunStatus         string                      `json:"run_status"`
+	Error             string                      `json:"error,omitempty"`
+	ErrorClass        string                      `json:"error_class,omitempty"`
+	Model             string                      `json:"model"`
+	BaseURL           string                      `json:"base_url"`
+	Temperature       float64                     `json:"temperature"`
+	RequestTimeout    string                      `json:"request_timeout"`
+	Workload          WorkloadMetadata            `json:"workload"`
+	SafetyLimits      SafetyLimits                `json:"safety_limits"`
+	Load              LoadMetadata                `json:"load"`
+	ClientDiagnostics benchmark.ClientDiagnostics `json:"client_diagnostics"`
+	Lifecycle         LifecycleMetadata           `json:"lifecycle"`
+	StopAdmission     StopAdmissionMetadata       `json:"stop_admission"`
+	Warmup            PhaseMetadata               `json:"warmup"`
+	Measurement       PhaseMetadata               `json:"measurement"`
+	Drain             DrainMetadata               `json:"drain"`
 }
 
 type RequestArtifact struct {
@@ -304,6 +326,9 @@ func validateRequests(metadata RunMetadata, requests []RequestArtifact) (phaseAr
 }
 
 func validateMetadata(metadata RunMetadata, warmupArtifacts, measuredArtifacts phaseArtifactSummary, requests []RequestArtifact, arrivals []benchmark.ArrivalRecord) error {
+	if err := validateWorkload(metadata); err != nil {
+		return err
+	}
 	if metadata.Lifecycle.ElapsedNS < 0 || metadata.Lifecycle.CompletedAt.Before(metadata.Lifecycle.StartedAt) {
 		return fmt.Errorf("invalid lifecycle timing metadata")
 	}
@@ -326,7 +351,7 @@ func validateMetadata(metadata RunMetadata, warmupArtifacts, measuredArtifacts p
 	if metadata.Measurement.Requested <= 0 || metadata.Warmup.Requested < 0 {
 		return fmt.Errorf("invalid phase requested counts")
 	}
-	if metadata.SafetyLimits.MaxConcurrency <= 0 || metadata.SafetyLimits.MaxRequests <= 0 || math.IsNaN(metadata.SafetyLimits.MaxRequestRate) || math.IsInf(metadata.SafetyLimits.MaxRequestRate, 0) || metadata.SafetyLimits.MaxRequestRate <= 0 || metadata.SafetyLimits.MaxInFlight <= 0 || metadata.Measurement.Requested > metadata.SafetyLimits.MaxRequests || metadata.Warmup.Requested > metadata.SafetyLimits.MaxRequests {
+	if metadata.SafetyLimits.MaxConcurrency <= 0 || metadata.SafetyLimits.MaxRequests <= 0 || math.IsNaN(metadata.SafetyLimits.MaxRequestRate) || math.IsInf(metadata.SafetyLimits.MaxRequestRate, 0) || metadata.SafetyLimits.MaxRequestRate <= 0 || metadata.SafetyLimits.MaxInFlight <= 0 || metadata.SafetyLimits.MaxInputTokens <= 0 || metadata.SafetyLimits.MaxOutputTokens <= 0 || metadata.Measurement.Requested > metadata.SafetyLimits.MaxRequests || metadata.Warmup.Requested > metadata.SafetyLimits.MaxRequests {
 		return fmt.Errorf("invalid or exceeded safety limits")
 	}
 	switch metadata.Load.Mode {
@@ -402,6 +427,50 @@ func validateMetadata(metadata RunMetadata, warmupArtifacts, measuredArtifacts p
 	}
 	return nil
 }
+
+func validateWorkload(metadata RunMetadata) error {
+	value := metadata.Workload
+	if value.Output.RequestedMaxTokens <= 0 || value.Output.RequestedMaxTokens > metadata.SafetyLimits.MaxOutputTokens {
+		return fmt.Errorf("invalid or unsafe requested workload output tokens")
+	}
+	if value.PromptBytes < 0 || len(value.PromptSHA256) != sha256HexLength {
+		return fmt.Errorf("invalid workload prompt metadata")
+	}
+	if _, err := hex.DecodeString(value.PromptSHA256); err != nil {
+		return fmt.Errorf("invalid workload prompt SHA-256")
+	}
+	switch value.Mode {
+	case workload.ModePrompt:
+		if value.PromptBytes <= 0 || value.Input != nil || value.Builder != nil || value.Tokenizer != nil {
+			return fmt.Errorf("direct prompt workload contains token-length metadata")
+		}
+	case workload.ModeTokenLength:
+		if value.Input == nil || value.Builder == nil || value.Tokenizer == nil {
+			return fmt.Errorf("token-length workload metadata is incomplete")
+		}
+		if value.Input.Contract != workload.ContractRenderedChatInput || value.Input.TargetTokens <= 0 || value.Input.ResolvedTokens != value.Input.TargetTokens || value.Input.TargetTokens > metadata.SafetyLimits.MaxInputTokens {
+			return fmt.Errorf("invalid token-length input metadata")
+		}
+		if value.Builder.Kind != workload.BuilderKindDeterministic || value.Builder.Version == "" {
+			return fmt.Errorf("invalid workload builder identity")
+		}
+		identity := value.Tokenizer
+		if identity.Adapter != "vllm_chat_render" || identity.AdapterVersion == "" || identity.Contract != workload.ContractRenderedChatInput || identity.Model != metadata.Model || identity.Source == "" || identity.ModelMaxLength <= 0 || len(identity.BehavioralFingerprintSHA256) != sha256HexLength {
+			return fmt.Errorf("invalid tokenizer identity")
+		}
+		if _, err := hex.DecodeString(identity.BehavioralFingerprintSHA256); err != nil {
+			return fmt.Errorf("invalid tokenizer behavioral fingerprint")
+		}
+		if value.Input.TargetTokens > maxInt()-value.Output.RequestedMaxTokens || value.Input.TargetTokens+value.Output.RequestedMaxTokens > identity.ModelMaxLength {
+			return fmt.Errorf("workload exceeds tokenizer model context")
+		}
+	default:
+		return fmt.Errorf("invalid workload mode %q", value.Mode)
+	}
+	return nil
+}
+
+const sha256HexLength = 64
 
 func validatePhaseCommon(phase PhaseMetadata, wantPhase benchmark.RequestPhase, artifacts phaseArtifactSummary, safety SafetyLimits) error {
 	if phase.Phase != wantPhase || phase.Requested < 0 || phase.Attempted < 0 || phase.Completed < 0 || phase.Successful < 0 || phase.Failed < 0 {

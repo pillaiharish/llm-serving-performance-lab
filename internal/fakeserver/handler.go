@@ -26,6 +26,10 @@ func NewHandler(config Config) (http.Handler, error) {
 }
 
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Path == "/tokenize" && h.config.TokenizerFixture {
+		h.serveTokenize(writer, request)
+		return
+	}
 	if request.URL.Path != "/v1/chat/completions" {
 		http.NotFound(writer, request)
 		return
@@ -101,6 +105,44 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if h.config.Mode == ModeDataAfterDone {
 		_ = writeJSONEvent(writer, flusher, streamChunk{Choices: []streamChoice{}})
 	}
+}
+
+func (h *handler) serveTokenize(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		writeAPIError(writer, http.StatusMethodNotAllowed, "method must be POST")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeAPIError(writer, http.StatusBadRequest, "Content-Type must be application/json")
+		return
+	}
+	defer request.Body.Close()
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxRequestBodyBytes))
+	var payload tokenizeRequest
+	if err := decoder.Decode(&payload); err != nil {
+		writeAPIError(writer, http.StatusBadRequest, "request body must contain valid JSON")
+		return
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeAPIError(writer, http.StatusBadRequest, "request body must contain exactly one JSON value")
+		return
+	}
+	if strings.TrimSpace(payload.Model) == "" || len(payload.Messages) != 1 || payload.Messages[0].Role != "user" || !payload.AddGenerationPrompt || payload.AddSpecialTokens || payload.ReturnTokenStrings {
+		writeAPIError(writer, http.StatusBadRequest, "invalid tokenizer fixture request")
+		return
+	}
+	// The fixture models eight rendered chat-template tokens plus one token per
+	// UTF-8 content byte. It is intentionally a test contract, not a model tokenizer.
+	count := 8 + len([]byte(payload.Messages[0].Content))
+	tokens := make([]int, count)
+	for index := range tokens {
+		tokens[index] = index + 1
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(tokenizeResponse{Count: count, MaxModelLength: h.config.TokenizerMaxModelLength, Tokens: tokens})
 }
 
 func validateRequest(writer http.ResponseWriter, request *http.Request) string {
