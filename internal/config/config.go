@@ -18,10 +18,22 @@ type Config struct {
 	Version   int
 	Endpoint  Endpoint
 	Request   Request
+	Workload  Workload
 	Runtime   Runtime
 	Capture   Capture
 	Benchmark Benchmark
 }
+
+type WorkloadMode string
+
+const (
+	WorkloadModePrompt      WorkloadMode = "prompt"
+	WorkloadModeTokenLength WorkloadMode = "token_length"
+)
+
+type TokenizerAdapter string
+
+const TokenizerAdapterVLLM TokenizerAdapter = "vllm"
 
 type LoadMode string
 
@@ -40,6 +52,26 @@ type Request struct {
 	Prompt          string
 	MaxOutputTokens int
 	Temperature     float64
+}
+
+type Workload struct {
+	Mode        WorkloadMode
+	InputTokens int
+	Tokenizer   Tokenizer
+	supplied    workloadFields
+}
+
+type Tokenizer struct {
+	Adapter TokenizerAdapter
+	URL     string
+}
+
+type workloadFields struct {
+	Mode             bool
+	InputTokens      bool
+	TokenizerAdapter bool
+	TokenizerURL     bool
+	Prompt           bool
 }
 
 type Runtime struct {
@@ -68,10 +100,12 @@ type OpenLoop struct {
 }
 
 type Safety struct {
-	MaxConcurrency int
-	MaxRequests    int
-	MaxRequestRate float64
-	MaxInFlight    int
+	MaxConcurrency  int
+	MaxRequests     int
+	MaxRequestRate  float64
+	MaxInFlight     int
+	MaxInputTokens  int
+	MaxOutputTokens int
 }
 
 type benchmarkFields struct {
@@ -87,26 +121,32 @@ type benchmarkFields struct {
 // Overrides contains only values explicitly supplied on the command line.
 // Pointer fields allow zero to remain a meaningful override.
 type Overrides struct {
-	BaseURL            *string
-	APIKeyEnv          *string
-	Model              *string
-	Prompt             *string
-	MaxOutputTokens    *int
-	Temperature        *float64
-	Timeout            *time.Duration
-	OutputDir          *string
-	Concurrency        *int
-	Requests           *int
-	MaxConcurrency     *int
-	MaxRequests        *int
-	WarmupRequests     *int
-	DrainTimeout       *time.Duration
-	Mode               *LoadMode
-	RequestRate        *float64
-	Duration           *time.Duration
-	MaxInFlight        *int
-	MaxRequestRate     *float64
-	MaxInFlightCeiling *int
+	BaseURL                *string
+	APIKeyEnv              *string
+	Model                  *string
+	Prompt                 *string
+	WorkloadMode           *WorkloadMode
+	InputTokens            *int
+	TokenizerAdapter       *TokenizerAdapter
+	TokenizerURL           *string
+	MaxOutputTokens        *int
+	Temperature            *float64
+	Timeout                *time.Duration
+	OutputDir              *string
+	Concurrency            *int
+	Requests               *int
+	MaxConcurrency         *int
+	MaxRequests            *int
+	WarmupRequests         *int
+	DrainTimeout           *time.Duration
+	Mode                   *LoadMode
+	RequestRate            *float64
+	Duration               *time.Duration
+	MaxInFlight            *int
+	MaxRequestRate         *float64
+	MaxInFlightCeiling     *int
+	MaxInputTokens         *int
+	MaxOutputTokensCeiling *int
 }
 
 func Default() Config {
@@ -116,17 +156,20 @@ func Default() Config {
 			MaxOutputTokens: 64,
 			Temperature:     0,
 		},
-		Runtime: Runtime{Timeout: 120 * time.Second, DrainTimeout: 120 * time.Second},
-		Capture: Capture{OutputDir: "runs"},
+		Workload: Workload{Mode: WorkloadModePrompt},
+		Runtime:  Runtime{Timeout: 120 * time.Second, DrainTimeout: 120 * time.Second},
+		Capture:  Capture{OutputDir: "runs"},
 		Benchmark: Benchmark{
 			Mode:        LoadModeClosedLoop,
 			Concurrency: 1,
 			Requests:    1,
 			Safety: Safety{
-				MaxConcurrency: 256,
-				MaxRequests:    10000,
-				MaxRequestRate: 10000,
-				MaxInFlight:    256,
+				MaxConcurrency:  256,
+				MaxRequests:     10000,
+				MaxRequestRate:  10000,
+				MaxInFlight:     256,
+				MaxInputTokens:  131072,
+				MaxOutputTokens: 32768,
 			},
 		},
 	}
@@ -144,6 +187,23 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	}
 	if overrides.Prompt != nil {
 		c.Request.Prompt = *overrides.Prompt
+		c.Workload.supplied.Prompt = true
+	}
+	if overrides.WorkloadMode != nil {
+		c.Workload.Mode = *overrides.WorkloadMode
+		c.Workload.supplied.Mode = true
+	}
+	if overrides.InputTokens != nil {
+		c.Workload.InputTokens = *overrides.InputTokens
+		c.Workload.supplied.InputTokens = true
+	}
+	if overrides.TokenizerAdapter != nil {
+		c.Workload.Tokenizer.Adapter = *overrides.TokenizerAdapter
+		c.Workload.supplied.TokenizerAdapter = true
+	}
+	if overrides.TokenizerURL != nil {
+		c.Workload.Tokenizer.URL = *overrides.TokenizerURL
+		c.Workload.supplied.TokenizerURL = true
 	}
 	if overrides.MaxOutputTokens != nil {
 		c.Request.MaxOutputTokens = *overrides.MaxOutputTokens
@@ -202,6 +262,12 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	if overrides.MaxInFlightCeiling != nil {
 		c.Benchmark.Safety.MaxInFlight = *overrides.MaxInFlightCeiling
 	}
+	if overrides.MaxInputTokens != nil {
+		c.Benchmark.Safety.MaxInputTokens = *overrides.MaxInputTokens
+	}
+	if overrides.MaxOutputTokensCeiling != nil {
+		c.Benchmark.Safety.MaxOutputTokens = *overrides.MaxOutputTokensCeiling
+	}
 }
 
 func (c Config) Validate() error {
@@ -220,11 +286,50 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Endpoint.Model) == "" {
 		return fmt.Errorf("endpoint.model is required")
 	}
-	if strings.TrimSpace(c.Request.Prompt) == "" {
-		return fmt.Errorf("request.prompt is required")
-	}
 	if c.Request.MaxOutputTokens <= 0 {
 		return fmt.Errorf("request.max_output_tokens must be greater than zero")
+	}
+	if c.Benchmark.Safety.MaxInputTokens <= 0 {
+		return fmt.Errorf("benchmark.safety.max_input_tokens must be greater than zero")
+	}
+	if c.Benchmark.Safety.MaxOutputTokens <= 0 {
+		return fmt.Errorf("benchmark.safety.max_output_tokens must be greater than zero")
+	}
+	if c.Request.MaxOutputTokens > c.Benchmark.Safety.MaxOutputTokens {
+		return fmt.Errorf("request.max_output_tokens exceeds benchmark.safety.max_output_tokens")
+	}
+	switch c.Workload.Mode {
+	case WorkloadModePrompt:
+		if c.Workload.supplied.InputTokens || c.Workload.supplied.TokenizerAdapter || c.Workload.supplied.TokenizerURL {
+			return fmt.Errorf("token-length workload settings are incompatible with workload.mode prompt")
+		}
+		if strings.TrimSpace(c.Request.Prompt) == "" {
+			return fmt.Errorf("request.prompt is required for workload.mode prompt")
+		}
+	case WorkloadModeTokenLength:
+		if c.Workload.supplied.Prompt {
+			return fmt.Errorf("request.prompt is incompatible with workload.mode token_length")
+		}
+		if c.Workload.InputTokens <= 0 {
+			return fmt.Errorf("workload.input_tokens must be greater than zero")
+		}
+		if c.Workload.InputTokens > c.Benchmark.Safety.MaxInputTokens {
+			return fmt.Errorf("workload.input_tokens exceeds benchmark.safety.max_input_tokens")
+		}
+		if c.Workload.Tokenizer.Adapter != TokenizerAdapterVLLM {
+			return fmt.Errorf("workload.tokenizer.adapter must be vllm")
+		}
+		if strings.TrimSpace(c.Workload.Tokenizer.URL) == "" {
+			return fmt.Errorf("workload.tokenizer.url is required")
+		}
+		if err := validateBaseURL(c.Workload.Tokenizer.URL); err != nil {
+			return fmt.Errorf("workload.tokenizer.url: %w", err)
+		}
+		if c.Workload.InputTokens > int(^uint(0)>>1)-c.Request.MaxOutputTokens {
+			return fmt.Errorf("workload input and requested output token total overflows int")
+		}
+	default:
+		return fmt.Errorf("workload.mode must be prompt or token_length")
 	}
 	if math.IsNaN(c.Request.Temperature) || math.IsInf(c.Request.Temperature, 0) || c.Request.Temperature < 0 {
 		return fmt.Errorf("request.temperature must be a finite non-negative number")
