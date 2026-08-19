@@ -27,3 +27,5 @@ benchmark:
     max_requests: 10000
     max_request_rate: 10000
     max_in_flight: 256
+    max_input_tokens: 131072
+    max_output_tokens: 32768

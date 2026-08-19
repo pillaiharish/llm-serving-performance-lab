@@ -95,6 +95,33 @@ Qwen deployments may optionally disable thinking mode with:
 That flag changes Qwen's model-serving behavior. It is not required by
 Slentore or by the generic OpenAI-compatible streaming protocol.
 
+## Token-length workload preflight
+
+Slentore token-length mode uses vLLM 0.26.0's root-level `/tokenize` endpoint,
+not the OpenAI `/v1` API root. With this deployment the two URLs are:
+
+```text
+chat API root:  http://127.0.0.1:18000/v1
+tokenizer URL:  http://127.0.0.1:18000/tokenize
+```
+
+The adapter sends a single user chat message with the generation prompt
+enabled and no template override. vLLM therefore applies the tokenizer, chat
+template, and default template kwargs configured for the served model. If the
+deployment uses `--default-chat-template-kwargs`, including Qwen's optional
+`enable_thinking` setting, `/tokenize` and chat completions see the same server
+default.
+
+`/tokenizer_info` is not required and need not be enabled. Slentore records a
+behavioral fingerprint of safe tokenizer probes instead; this proves the
+observed preflight behavior but is not a vocabulary or Hugging Face revision
+hash. A changed deployment at the same URL can therefore change token counts.
+
+Use [`configs/token-length.example.yaml`](../../configs/token-length.example.yaml)
+as the generic starting point. The target is the full rendered chat input,
+and the server-reported `max_model_len` is checked against target input plus
+the requested output maximum before lifecycle timing starts.
+
 After vLLM is ready, use an environment variable rather than embedding a
 credential in a command or file:
 
