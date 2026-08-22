@@ -10,6 +10,8 @@ import (
 
 type Mode string
 
+type TokenEvidenceMode string
+
 const (
 	ModeNormal        Mode = "normal"
 	ModeNoContent     Mode = "no-content"
@@ -17,6 +19,14 @@ const (
 	ModeMalformedJSON Mode = "malformed-json"
 	ModeEOFBeforeDone Mode = "eof-before-done"
 	ModeDataAfterDone Mode = "data-after-done"
+)
+
+const (
+	TokenEvidenceDisabled  TokenEvidenceMode = "disabled"
+	TokenEvidenceSingleton TokenEvidenceMode = "singleton"
+	TokenEvidenceBatched   TokenEvidenceMode = "batched"
+	TokenEvidenceMissing   TokenEvidenceMode = "missing"
+	TokenEvidenceMismatch  TokenEvidenceMode = "mismatch"
 )
 
 type Config struct {
@@ -30,6 +40,7 @@ type Config struct {
 	DoneDelay               time.Duration
 	PromptTokens            int
 	CompletionTokens        int
+	TokenEvidence           TokenEvidenceMode
 	TokenizerFixture        bool
 	TokenizerMaxModelLength int
 }
@@ -46,6 +57,7 @@ func DefaultConfig() Config {
 		DoneDelay:               10 * time.Millisecond,
 		PromptTokens:            16,
 		CompletionTokens:        4,
+		TokenEvidence:           TokenEvidenceDisabled,
 		TokenizerMaxModelLength: 4096,
 	}
 }
@@ -56,6 +68,9 @@ func (c Config) Validate() error {
 	}
 	if !c.Mode.valid() {
 		return fmt.Errorf("mode must be one of %s", strings.Join(supportedModeNames(), ", "))
+	}
+	if !c.TokenEvidence.valid() {
+		return fmt.Errorf("token evidence must be one of %s", strings.Join(supportedTokenEvidenceNames(), ", "))
 	}
 	durations := []struct {
 		name  string
@@ -81,6 +96,17 @@ func (c Config) Validate() error {
 	if c.CompletionTokens < 0 {
 		return fmt.Errorf("completion tokens must not be negative")
 	}
+	if c.TokenEvidence == TokenEvidenceSingleton || c.TokenEvidence == TokenEvidenceBatched || c.TokenEvidence == TokenEvidenceMissing {
+		if c.CompletionTokens != c.ContentChunks {
+			return fmt.Errorf("%s token evidence requires completion tokens to equal content chunks", c.TokenEvidence)
+		}
+	}
+	if c.TokenEvidence == TokenEvidenceBatched && c.ContentChunks < 2 {
+		return fmt.Errorf("batched token evidence requires at least two content chunks")
+	}
+	if c.TokenEvidence == TokenEvidenceMissing && c.ContentChunks < 1 {
+		return fmt.Errorf("missing token evidence requires at least one content chunk")
+	}
 	if c.TokenizerMaxModelLength <= 0 {
 		return fmt.Errorf("tokenizer max model length must be greater than zero")
 	}
@@ -89,6 +115,25 @@ func (c Config) Validate() error {
 		return fmt.Errorf("total token count overflows int")
 	}
 	return nil
+}
+
+func (m TokenEvidenceMode) valid() bool {
+	switch m {
+	case TokenEvidenceDisabled, TokenEvidenceSingleton, TokenEvidenceBatched, TokenEvidenceMissing, TokenEvidenceMismatch:
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedTokenEvidenceNames() []string {
+	return []string{
+		string(TokenEvidenceDisabled),
+		string(TokenEvidenceSingleton),
+		string(TokenEvidenceBatched),
+		string(TokenEvidenceMissing),
+		string(TokenEvidenceMismatch),
+	}
 }
 
 func (c Config) TotalTokens() int {

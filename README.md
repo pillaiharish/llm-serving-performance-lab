@@ -4,9 +4,10 @@ This repository contains **Slentore**, a Go benchmark harness for studying LLM
 serving performance from raw client-side timing evidence.
 
 Slentore implements a production-quality streaming OpenAI-compatible Chat
-Completions request primitive with two explicit load models: fixed-concurrency
-closed-loop work and wall-clock open-loop request-rate scheduling. One
-invocation runs an optional request-count warmup followed by one measured
+Completions request primitive with conservative generic inter-chunk timing and
+opt-in, evidence-backed vLLM token-arrival timing. It provides two explicit load
+models: fixed-concurrency closed-loop work and wall-clock open-loop request-rate
+scheduling. One invocation runs an optional request-count warmup followed by one measured
 cohort. Duration-based warmup, concurrency sweeps, percentile aggregation,
 deployment, and observability remain outside this version.
 
@@ -54,6 +55,8 @@ benchmark:
   concurrency: 1
   requests: 1
   warmup_requests: 0
+  token_timing:
+    mode: disabled
   safety:
     max_concurrency: 256
     max_requests: 10000
@@ -77,9 +80,10 @@ The built-in defaults are 64 maximum output tokens, temperature 0, a 120
 second per-request timeout, a separate 120 second drain timeout, the `runs`
 output directory, closed-loop mode, concurrency 1, zero warmup requests, one
 measured request, maximum concurrency 256, maximum requests 10,000, maximum
-request rate 10,000/s, maximum in-flight 256, maximum target input tokens
-131,072, and maximum requested output tokens 32,768. Base URL and model must
-be supplied by YAML and/or flags; direct-prompt mode also requires a prompt.
+request rate 10,000/s, maximum in-flight 256, disabled token timing, maximum
+target input tokens 131,072, and maximum requested output tokens 32,768. Base
+URL and model must be supplied by YAML and/or flags; direct-prompt mode also
+requires a prompt.
 
 Requested concurrency and measured request count must be positive; warmup may
 be zero. Warmup and measured counts are each checked independently against
@@ -140,6 +144,7 @@ build/slentore bench \
   --drain-timeout 120s \
   --output-dir runs \
   --api-key-env "" \
+  --token-timing disabled \
   --mode closed-loop \
   --concurrency 4 \
   --warmup-requests 4 \
@@ -160,6 +165,11 @@ Slentore sends:
   "stream_options": {"include_usage": true}
 }
 ```
+
+With the default `token_timing.mode: disabled`, the request is semantically the
+generic payload above: the vLLM extension is omitted entirely, rather than sent
+as `return_token_ids: false`. With `--token-timing vllm`, the same streaming
+request additionally contains `"return_token_ids": true`.
 
 Generated content is parsed for byte counts and timing but is not streamed to
 the terminal or accumulated in memory. With the default zero warmup,
@@ -227,6 +237,38 @@ contract versions, source URL, server `max_model_len`, and a behavioral hash
 of fixed safe tokenizer probes. Because `/tokenizer_info` is optional in vLLM,
 this is not a vocabulary or model-revision hash; changing the endpoint may
 change counts even when its URL and model name remain the same.
+
+## Output token timing evidence
+
+Output token timing is configured independently from the input workload:
+
+```yaml
+benchmark:
+  token_timing:
+    mode: vllm
+```
+
+The CLI equivalent is `--token-timing vllm`. Both direct-prompt and
+token-length workloads support either `disabled` or `vllm`; Slentore never
+infers output token timing from `workload.mode`, the input tokenizer adapter,
+the model name, or endpoint URL. The `/tokenize` adapter controls input shape,
+while this mode requests output evidence from the streaming Chat Completion
+response.
+
+In vLLM mode Slentore requests `return_token_ids=true`. vLLM returns prompt IDs
+separately as top-level `prompt_token_ids` and generated delta IDs as
+choice-zero `token_ids`. Slentore ignores prompt IDs, validates generated IDs,
+immediately reduces them to safe presence/cardinality evidence, and never
+prints or persists the numeric IDs.
+
+An SSE event is not automatically a token event. True ITL is available only
+when the request completes through `[DONE]`, server usage proves full output
+coverage, and every token-bearing event contains exactly one generated ID. If
+an event contains multiple generated IDs, their intra-event arrival times are
+not observable; Slentore marks ITL unavailable rather than dividing or
+interpolating the event gap. The successful request, ICL, and other supported
+metrics remain usable. This path uses ordinary HTTP/SSE Chat Completions and
+does not require gRPC.
 
 ## Benchmark lifecycle and load models
 
@@ -385,6 +427,12 @@ enables a tiny `/tokenize` contract with eight fixed rendered tokens plus one
 token per UTF-8 content byte. It is disabled by default and is not a Qwen or
 production tokenizer simulation.
 
+Token-evidence tests may independently add `--token-evidence singleton`,
+`batched`, `missing`, or `mismatch`. The default is `disabled`, and fixtures
+emit IDs only when the request actually contains `return_token_ids=true`.
+These deterministic sentinel IDs exercise evidence validation and redaction;
+they do not make the fake server a vLLM simulator.
+
 In another terminal, benchmark it exactly like any other OpenAI-compatible
 endpoint. This example exercises four overlapping requests while leaving the
 fixture's per-request protocol unchanged:
@@ -485,10 +533,12 @@ and falls back to wall-time subtraction only for older observations where the
 relevant optional offsets are absent.
 
 Every valid `data:` event has a sequence number, receipt timestamp, canonical
-non-optional `received_after_ns` offset, content flag, and UTF-8 content-byte
-count. Usage-only, role-only, empty-delta, finish, and `[DONE]` events are
-retained as zero-content events. Raw event JSON and generated strings are not
-retained.
+non-optional `received_after_ns` offset, content flag, UTF-8 content-byte count,
+safe token-ID-field presence, and generated-token cardinality. Usage-only,
+role-only, empty-delta, finish, and `[DONE]` events are retained as zero-content
+events. Content-bearing and token-bearing event subsets are independent: a
+special generated token may have no visible content. Raw event JSON, generated
+strings, prompt token IDs, and generated token IDs are not retained.
 
 The client continues reading through EOF after `[DONE]`. EOF without `[DONE]`,
 malformed JSON, data after `[DONE]`, or an oversized SSE frame is a stream
@@ -528,11 +578,12 @@ does not estimate missing token usage.
 SSE events plus count, mean, minimum, and maximum. Fewer than two content events
 makes it unavailable.
 
-### Inter-chunk latency is not ITL
+### Inter-chunk latency and true ITL
 
 An OpenAI-compatible SSE event is not guaranteed to contain exactly one
-tokenizer token. Slentore therefore does not label chunk gaps as inter-token
-latency. True ITL is represented explicitly as:
+tokenizer token. Slentore therefore does not label generic content-chunk gaps
+as inter-token latency. With token timing disabled, true ITL remains explicitly
+unavailable:
 
 ```json
 {
@@ -541,6 +592,27 @@ latency. True ITL is represented explicitly as:
   "reason": "OpenAI-compatible SSE chunks are not guaranteed to map 1:1 to tokenizer tokens"
 }
 ```
+
+With complete singleton vLLM evidence, generated tokens arriving at canonical
+request-relative offsets `t1, t2, ..., tn` produce:
+
+```text
+ITL = [t2-t1, t3-t2, ..., tn-t(n-1)]
+count = output_tokens - 1
+```
+
+`metrics.json` stores the individual millisecond gaps plus count, mean,
+minimum, maximum, source, and availability/reason. At least two server-reported
+output tokens are required. Missing usage, missing or excess ID coverage,
+negative/decreasing offsets, invalid IDs, incomplete streams, or any multi-ID
+event make true ITL unavailable for that request. Zero gaps are permitted at
+client timestamp resolution.
+
+Slentore ITL is client-observed inter-token arrival latency. It is not an
+internal GPU decode-kernel duration, model compute time, or server-scheduler-only
+decode measurement. TTFT remains request start to first non-empty visible
+content, TPOT retains its content-window formula, and ICL remains the gap
+distribution over visible content-bearing events.
 
 `response_bytes` is the sum of UTF-8 bytes in non-empty generated-content
 deltas. `response_body_bytes` is the number of HTTP body bytes read, including
@@ -573,7 +645,7 @@ runs/
 
 - Both request roots are always created, including an empty `warmup/requests`
   directory when warmup is skipped.
-- `run.json` is artifact schema version 5. It retains explicit load mode and
+- `run.json` is artifact schema version 6. It retains explicit load mode and
   mode-specific configuration plus one run-level workload object containing
   safe prompt length/hash, requested output maximum, and, for token-length
   runs, exact target/resolved input, builder, tokenizer contract, behavioral
@@ -582,12 +654,14 @@ runs/
   lifecycle transitions; explicit stop-admission wall/relative evidence;
   separate phase status, timing, counts, concurrency, and mutually exclusive
   outcome totals; drain timing, timeout/cancellation state and affected IDs;
-  and the overall completed, failed, or canceled status and error.
+  token-timing mode/source, and the overall completed, failed, or canceled
+  status and error.
 - Open-loop `arrivals.jsonl` files retain safe scheduling/admission evidence
   and counts for started, client-limited, scheduler-limited, and cancellation-
-  unprocessed arrivals. Closed-loop schema-5 runs omit arrival files.
+  unprocessed arrivals. Closed-loop schema-6 runs omit arrival files.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
-  request-relative nanosecond offsets, event evidence, server usage when
+  request-relative nanosecond offsets, safe content/token-cardinality event
+  evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
 - `metrics.json` contains `(run_id, request_id)` and values derived from that
   observation.
@@ -597,7 +671,7 @@ request sequence, validates phase-specific identities, ranges, duplicates,
 counts and outcome totals, stages the complete tree, and atomically renames it
 only after every file has been written. Metric derivation and filesystem work
 happen after drain. Warmup observations are never mixed into the measured
-cohort. Historical schema-1 through schema-4 evidence remain unchanged.
+cohort. Historical schema-1 through schema-5 evidence remain unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
@@ -637,9 +711,11 @@ go test -race ./...
 This version runs one optional request-count warmup and one measured closed- or
 open-loop cohort. It contains no warmup-duration control, load sweep, run-level
 percentile or throughput aggregation, workload sweep, database,
-GPU discovery, deployment automation, or observability integration. The
-lifecycle coordinator reuses the existing `Runner.RunRequest` primitive
+GPU discovery, deployment automation, or observability integration. True ITL
+is a per-request metric here; run-level percentiles and broader aggregation
+remain future work. The lifecycle coordinator reuses the existing
+`Runner.RunRequest` primitive
 without changing how an individual request is observed or how its metrics are
 calculated. The fake server provides controlled HTTP/SSE validation and an
 opt-in byte-tokenizer fixture; it does not simulate GPU, model, real tokenizer,
-or vLLM capacity behavior. True streamed-token ITL remains outside scope.
+or vLLM capacity behavior.

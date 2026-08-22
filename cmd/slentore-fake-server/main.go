@@ -49,6 +49,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, listen li
 func parseConfig(args []string, stderr io.Writer) (fakeserver.Config, bool, error) {
 	config := fakeserver.DefaultConfig()
 	mode := string(config.Mode)
+	tokenEvidence := string(config.TokenEvidence)
 	flags := flag.NewFlagSet("slentore-fake-server", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { printUsage(flags.Output()) }
@@ -62,6 +63,7 @@ func parseConfig(args []string, stderr io.Writer) (fakeserver.Config, bool, erro
 	flags.DurationVar(&config.DoneDelay, "done-delay", config.DoneDelay, "delay before the [DONE] event")
 	flags.IntVar(&config.PromptTokens, "prompt-tokens", config.PromptTokens, "server-reported prompt token count")
 	flags.IntVar(&config.CompletionTokens, "completion-tokens", config.CompletionTokens, "server-reported completion token count")
+	flags.StringVar(&tokenEvidence, "token-evidence", tokenEvidence, "token-ID fixture: disabled, singleton, batched, missing, or mismatch")
 	flags.BoolVar(&config.TokenizerFixture, "tokenizer-fixture", config.TokenizerFixture, "enable the deterministic byte-token /tokenize test endpoint")
 	flags.IntVar(&config.TokenizerMaxModelLength, "tokenizer-max-model-len", config.TokenizerMaxModelLength, "max_model_len returned by the tokenizer fixture")
 
@@ -77,6 +79,7 @@ func parseConfig(args []string, stderr io.Writer) (fakeserver.Config, bool, erro
 		return config, false, err
 	}
 	config.Mode = fakeserver.Mode(mode)
+	config.TokenEvidence = fakeserver.TokenEvidenceMode(tokenEvidence)
 	if err := config.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
 		return config, false, err
@@ -101,5 +104,6 @@ func printStartup(writer io.Writer, config fakeserver.Config, address string) {
 	fmt.Fprintf(writer, "DONE delay:          %s\n", config.DoneDelay)
 	fmt.Fprintf(writer, "prompt tokens:       %d\n", config.PromptTokens)
 	fmt.Fprintf(writer, "completion tokens:   %d\n", config.CompletionTokens)
+	fmt.Fprintf(writer, "token evidence:      %s\n", config.TokenEvidence)
 	fmt.Fprintf(writer, "tokenizer fixture:   %t\n", config.TokenizerFixture)
 }

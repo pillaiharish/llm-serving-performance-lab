@@ -39,6 +39,9 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 		if !payload.Stream || !payload.StreamOptions.IncludeUsage || payload.Model != "test-model" || payload.MaxTokens != 64 || payload.Temperature != 0 {
 			t.Errorf("unexpected request payload: %+v", payload)
 		}
+		if payload.ReturnTokenIDs != nil {
+			t.Errorf("return_token_ids unexpectedly present: %v", *payload.ReturnTokenIDs)
+		}
 		if len(payload.Messages) != 1 || payload.Messages[0].Role != "user" || payload.Messages[0].Content != "private prompt" {
 			t.Errorf("unexpected messages: %+v", payload.Messages)
 		}
@@ -96,6 +99,9 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 	if !observation.Usage.Available || observation.Usage.Source != "server_usage" || observation.Usage.InputTokens != 5 || observation.Usage.OutputTokens != 2 || observation.Usage.TotalTokens != 7 {
 		t.Fatalf("unexpected usage: %+v", observation.Usage)
 	}
+	if observation.TokenTiming.Requested || observation.TokenTiming.Source != benchmark.TokenTimingSourceUnavailable || !observation.TokenTiming.CompletedThroughDone {
+		t.Fatalf("unexpected disabled token timing evidence: %+v", observation.TokenTiming)
+	}
 	encoded, err := json.Marshal(observation)
 	if err != nil {
 		t.Fatalf("marshal observation: %v", err)
@@ -104,6 +110,105 @@ func TestClientCapturesStreamingFixture(t *testing.T) {
 		if strings.Contains(string(encoded), sensitive) {
 			t.Fatalf("observation contains sensitive payload %q", sensitive)
 		}
+	}
+}
+
+func TestClientSerializesTokenEvidenceMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        TokenEvidenceMode
+		wantPresent bool
+	}{
+		{name: "disabled omits extension", mode: TokenEvidenceDisabled},
+		{name: "vllm requests IDs", mode: TokenEvidenceVLLM, wantPresent: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				encoded, present := payload["return_token_ids"]
+				if present != test.wantPresent {
+					t.Errorf("return_token_ids present = %t, want %t; payload=%s", present, test.wantPresent, payload)
+				}
+				if present && string(encoded) != "true" {
+					t.Errorf("return_token_ids = %s, want true", encoded)
+				}
+				for _, forbidden := range []string{"logprobs", "prompt_logprobs", "return_tokens_as_token_ids", "stream_interval"} {
+					if _, exists := payload[forbidden]; exists {
+						t.Errorf("unexpected request field %q", forbidden)
+					}
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n")
+			}))
+			defer server.Close()
+			client, err := NewClientWithOptions(server.Client(), server.URL+"/v1", "", ClientOptions{TokenEvidenceMode: test.mode})
+			if err != nil {
+				t.Fatalf("NewClientWithOptions: %v", err)
+			}
+			observation := newObservation()
+			if err := client.Execute(context.Background(), benchmark.Request{Model: "model", Prompt: "prompt", MaxOutputTokens: 1}, &observation); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewClientRejectsUnknownTokenEvidenceMode(t *testing.T) {
+	if _, err := NewClientWithOptions(http.DefaultClient, "http://example.test/v1", "", ClientOptions{TokenEvidenceMode: "automatic"}); err == nil || !strings.Contains(err.Error(), "disabled or vllm") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestClientCapturesVLLMTokenCardinalityWithoutPersistingIDs(t *testing.T) {
+	fixture := "data: {\"prompt_token_ids\":[987654300,987654301],\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n" +
+		"data: {\"choices\":[{\"index\":1,\"delta\":{\"content\":\"ignored\"},\"token_ids\":[987654399]},{\"index\":0,\"delta\":{\"content\":\"x\"},\"token_ids\":[987654321]}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\",\"token_ids\":[987654322]}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"token_ids\":[]}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2,\"total_tokens\":4}}\n\n" +
+		"data: [DONE]\n\n"
+	observation, err := executeFixtureWithMode(t, fixture, TokenEvidenceVLLM)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !observation.TokenTiming.Requested || observation.TokenTiming.Source != benchmark.TokenTimingSourceVLLM || !observation.TokenTiming.CompletedThroughDone || observation.TokenTiming.InvalidReason != "" {
+		t.Fatalf("token timing evidence = %+v", observation.TokenTiming)
+	}
+	wantPresent := []bool{false, true, true, true, false, false}
+	wantCounts := []int{0, 1, 1, 0, 0, 0}
+	if len(observation.StreamEvents) != len(wantCounts) {
+		t.Fatalf("events = %+v", observation.StreamEvents)
+	}
+	for index, event := range observation.StreamEvents {
+		if event.TokenIDsPresent != wantPresent[index] || event.GeneratedTokenCount != wantCounts[index] {
+			t.Fatalf("event %d = %+v", index, event)
+		}
+	}
+	if observation.FirstContentAt == nil || observation.LastContentAt == nil || !observation.FirstContentAt.Equal(*observation.LastContentAt) {
+		t.Fatalf("TTFT content evidence changed by non-content token: %+v", observation)
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, sentinel := range []string{"987654300", "987654301", "987654321", "987654322", "987654399", "ignored"} {
+		if strings.Contains(string(encoded), sentinel) {
+			t.Fatalf("observation retained token/content sentinel %q: %s", sentinel, encoded)
+		}
+	}
+}
+
+func TestClientRecordsNegativeTokenIDAsInvalidEvidence(t *testing.T) {
+	fixture := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"token_ids\":[-7]}]}\n\ndata: [DONE]\n\n"
+	observation, err := executeFixtureWithMode(t, fixture, TokenEvidenceVLLM)
+	if err != nil {
+		t.Fatalf("negative semantic evidence failed request: %v", err)
+	}
+	if !strings.Contains(observation.TokenTiming.InvalidReason, "negative") || observation.StreamEvents[0].GeneratedTokenCount != 1 {
+		t.Fatalf("invalid evidence = %+v, events=%+v", observation.TokenTiming, observation.StreamEvents)
 	}
 }
 
@@ -241,6 +346,11 @@ func TestClientStreamingErrorsPreservePartialObservation(t *testing.T) {
 			fixture:   "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":-1,\"completion_tokens\":0,\"total_tokens\":-1}}\n\ndata: [DONE]\n\n",
 			wantError: "negative token count",
 		},
+		{
+			name:      "malformed token_ids type",
+			fixture:   "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"token_ids\":\"bad\"}]}\n\ndata: [DONE]\n\n",
+			wantError: "decode SSE JSON",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -348,6 +458,22 @@ func executeFixture(t *testing.T, fixture string, status int) (benchmark.Request
 	err = client.Execute(context.Background(), benchmark.Request{
 		RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
 	}, &observation)
+	return observation, err
+}
+
+func executeFixtureWithMode(t *testing.T, fixture string, mode TokenEvidenceMode) (benchmark.RequestObservation, error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, fixture)
+	}))
+	defer server.Close()
+	client, err := NewClientWithOptions(server.Client(), server.URL+"/v1", "", ClientOptions{TokenEvidenceMode: mode})
+	if err != nil {
+		t.Fatalf("NewClientWithOptions: %v", err)
+	}
+	observation := newObservation()
+	err = client.Execute(context.Background(), benchmark.Request{Model: "model", Prompt: "prompt", MaxOutputTokens: 64}, &observation)
 	return observation, err
 }
 

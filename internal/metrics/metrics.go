@@ -21,10 +21,15 @@ type InterChunkLatency struct {
 	Reason    string    `json:"reason,omitempty"`
 }
 
-type ITLAvailability struct {
-	Available bool   `json:"available"`
-	Source    string `json:"source"`
-	Reason    string `json:"reason"`
+type InterTokenLatency struct {
+	Available bool      `json:"available"`
+	Source    string    `json:"source"`
+	Count     int       `json:"count"`
+	MeanMS    float64   `json:"mean_ms"`
+	MinMS     float64   `json:"min_ms"`
+	MaxMS     float64   `json:"max_ms"`
+	ValuesMS  []float64 `json:"values_ms"`
+	Reason    string    `json:"reason,omitempty"`
 }
 
 type RequestMetrics struct {
@@ -39,7 +44,7 @@ type RequestMetrics struct {
 	OutputTokensPerSecond Scalar               `json:"output_tokens_per_second"`
 	DecodeTokensPerSecond Scalar               `json:"decode_tokens_per_second"`
 	InterChunkLatency     InterChunkLatency    `json:"inter_chunk_latency"`
-	ITL                   ITLAvailability      `json:"itl"`
+	ITL                   InterTokenLatency    `json:"itl"`
 	TokenUsage            benchmark.TokenUsage `json:"token_usage"`
 	StreamEventCount      int                  `json:"stream_event_count"`
 	ContentEventCount     int                  `json:"content_event_count"`

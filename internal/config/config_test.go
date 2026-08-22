@@ -10,7 +10,7 @@ import (
 
 func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved := Default()
-	if resolved.Request.MaxOutputTokens != 64 || resolved.Workload.Mode != WorkloadModePrompt || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 || resolved.Benchmark.Safety.MaxInputTokens != 131072 || resolved.Benchmark.Safety.MaxOutputTokens != 32768 {
+	if resolved.Request.MaxOutputTokens != 64 || resolved.Workload.Mode != WorkloadModePrompt || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.TokenTiming.Mode != TokenTimingDisabled || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 || resolved.Benchmark.Safety.MaxInputTokens != 131072 || resolved.Benchmark.Safety.MaxOutputTokens != 32768 {
 		t.Fatalf("unexpected defaults: %+v", resolved)
 	}
 
@@ -27,6 +27,38 @@ func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv, Concurrency: &concurrency, Requests: &requests, MaxConcurrency: &maxConcurrency, MaxRequests: &maxRequests, WarmupRequests: &warmupRequests, DrainTimeout: &drainTimeout})
 	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" || resolved.Benchmark.Concurrency != 0 || resolved.Benchmark.Requests != 0 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 0 || resolved.Benchmark.Safety.MaxRequests != 0 || resolved.Runtime.DrainTimeout != 0 {
 		t.Fatalf("explicit zero/empty overrides not applied: %+v", resolved)
+	}
+}
+
+func TestTokenTimingConfigurationIsIndependentOfWorkloadMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload string
+		mode     TokenTimingMode
+	}{
+		{name: "prompt disabled", workload: "prompt", mode: TokenTimingDisabled},
+		{name: "prompt vllm", workload: "prompt", mode: TokenTimingVLLM},
+		{name: "token length disabled", workload: "token_length", mode: TokenTimingDisabled},
+		{name: "token length vllm", workload: "token_length", mode: TokenTimingVLLM},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			workloadBlock := "workload:\n  mode: prompt\nrequest:\n  prompt: hello\n"
+			if test.workload == "token_length" {
+				workloadBlock = "workload:\n  mode: token_length\n  input_tokens: 16\n  tokenizer: {adapter: vllm, url: http://localhost:8000/tokenize}\nrequest: {}\n"
+			}
+			content := "version: 1\nendpoint: {base_url: http://localhost:8000/v1, model: model}\n" + workloadBlock + "benchmark:\n  token_timing:\n    mode: " + string(test.mode) + "\n"
+			resolved, err := Load(writeConfig(t, content))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := resolved.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if resolved.Benchmark.TokenTiming.Mode != test.mode || string(resolved.Workload.Mode) != test.workload {
+				t.Fatalf("resolved = %+v", resolved)
+			}
+		})
 	}
 }
 
@@ -236,6 +268,7 @@ func TestValidateRejectsUnsafeOrIncompleteConfiguration(t *testing.T) {
 		{name: "zero max concurrency", alter: func(value *Config) { value.Benchmark.Safety.MaxConcurrency = 0 }, want: "max_concurrency"},
 		{name: "zero max requests", alter: func(value *Config) { value.Benchmark.Safety.MaxRequests = 0 }, want: "max_requests"},
 		{name: "negative warmup requests", alter: func(value *Config) { value.Benchmark.WarmupRequests = -1 }, want: "warmup_requests"},
+		{name: "invalid token timing", alter: func(value *Config) { value.Benchmark.TokenTiming.Mode = "automatic" }, want: "token_timing.mode"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

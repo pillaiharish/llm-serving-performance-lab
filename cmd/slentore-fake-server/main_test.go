@@ -33,11 +33,12 @@ func TestParseConfigDefaultsAndOverrides(t *testing.T) {
 		"--done-delay", "5ms",
 		"--prompt-tokens", "0",
 		"--completion-tokens", "0",
+		"--token-evidence", "mismatch",
 	}, &stderr)
 	if err != nil || help {
 		t.Fatalf("overrides: config=%+v help=%v err=%v stderr=%q", config, help, err, stderr.String())
 	}
-	if config.Listen != "localhost:19090" || config.Mode != fakeserver.ModeNoContent || config.HeaderDelay != time.Millisecond || config.FirstContentDelay != 2*time.Millisecond || config.ChunkInterval != 3*time.Millisecond || config.ContentChunks != 0 || config.UsageDelay != 4*time.Millisecond || config.DoneDelay != 5*time.Millisecond || config.PromptTokens != 0 || config.CompletionTokens != 0 {
+	if config.Listen != "localhost:19090" || config.Mode != fakeserver.ModeNoContent || config.TokenEvidence != fakeserver.TokenEvidenceMismatch || config.HeaderDelay != time.Millisecond || config.FirstContentDelay != 2*time.Millisecond || config.ChunkInterval != 3*time.Millisecond || config.ContentChunks != 0 || config.UsageDelay != 4*time.Millisecond || config.DoneDelay != 5*time.Millisecond || config.PromptTokens != 0 || config.CompletionTokens != 0 {
 		t.Fatalf("overrides = %+v", config)
 	}
 }
@@ -51,6 +52,7 @@ func TestParseConfigErrorsAndHelp(t *testing.T) {
 	}{
 		{name: "help", args: []string{"--help"}, wantHelp: true, wantText: "Usage:"},
 		{name: "unknown mode", args: []string{"--mode", "unknown"}, wantText: "mode must"},
+		{name: "unknown token evidence", args: []string{"--token-evidence", "unknown"}, wantText: "token evidence"},
 		{name: "negative delay", args: []string{"--header-delay", "-1ms"}, wantText: "must not be negative"},
 		{name: "negative chunks", args: []string{"--content-chunks", "-1"}, wantText: "content chunks"},
 		{name: "negative prompt tokens", args: []string{"--prompt-tokens", "-1"}, wantText: "prompt tokens"},

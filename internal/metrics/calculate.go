@@ -30,16 +30,112 @@ func Calculate(observation benchmark.RequestObservation) RequestMetrics {
 		ContentEventCount: len(contentEvents),
 		ResponseBytes:     responseBytes,
 		ResponseBodyBytes: observation.ResponseBodyBytes,
-		ITL: ITLAvailability{
-			Available: false,
-			Source:    benchmark.TokenUsageSourceUnavailable,
-			Reason:    TrueITLReason,
-		},
 	}
+	result.ITL = calculateInterTokenLatency(observation)
 	result.InterChunkLatency = calculateInterChunkLatency(contentEvents)
 	result.TPOT = calculateTPOT(observation, len(contentEvents))
 	result.OutputTokensPerSecond = calculateOutputRate(observation)
 	result.DecodeTokensPerSecond = calculateDecodeRate(observation, len(contentEvents))
+	return result
+}
+
+func calculateInterTokenLatency(observation benchmark.RequestObservation) InterTokenLatency {
+	source := observation.TokenTiming.Source
+	if source == "" {
+		source = benchmark.TokenTimingSourceUnavailable
+	}
+	result := InterTokenLatency{Source: source, ValuesMS: make([]float64, 0)}
+	unavailable := func(reason string) InterTokenLatency {
+		result.Reason = reason
+		return result
+	}
+
+	if !observation.TokenTiming.Requested {
+		result.Source = benchmark.TokenTimingSourceUnavailable
+		return unavailable(TrueITLReason)
+	}
+	if observation.TokenTiming.Source != benchmark.TokenTimingSourceVLLM {
+		return unavailable("token timing evidence source is not vLLM return_token_ids client receive timing")
+	}
+	if observation.TokenTiming.InvalidReason != "" {
+		return unavailable(observation.TokenTiming.InvalidReason)
+	}
+	if observation.Error != "" || !observation.TokenTiming.CompletedThroughDone {
+		return unavailable("SSE request did not complete cleanly through [DONE]")
+	}
+	if !observation.Usage.Available {
+		return unavailable("server token usage not available")
+	}
+	if observation.Usage.OutputTokens < 2 {
+		return unavailable("at least two output tokens are required")
+	}
+
+	tokenEvents := make([]benchmark.StreamEvent, 0, observation.Usage.OutputTokens)
+	observedTokens := 0
+	for _, event := range observation.StreamEvents {
+		if event.GeneratedTokenCount < 0 {
+			return unavailable("generated token count must not be negative")
+		}
+		if !event.TokenIDsPresent && event.GeneratedTokenCount != 0 {
+			return unavailable("generated token count requires token_ids presence")
+		}
+		if event.GeneratedTokenCount == 0 {
+			continue
+		}
+		if event.GeneratedTokenCount > int(^uint(0)>>1)-observedTokens {
+			return unavailable("observed generated token count overflows int")
+		}
+		observedTokens += event.GeneratedTokenCount
+		tokenEvents = append(tokenEvents, event)
+	}
+	if observedTokens == 0 {
+		return unavailable("generated token-ID evidence was not observed")
+	}
+	if observedTokens != observation.Usage.OutputTokens {
+		return unavailable(fmt.Sprintf("observed generated token count %d does not match server output token count %d", observedTokens, observation.Usage.OutputTokens))
+	}
+	for _, event := range tokenEvents {
+		if event.GeneratedTokenCount != 1 {
+			return unavailable("SSE event contained multiple generated token IDs; intra-event token timing is not observable")
+		}
+	}
+	if len(tokenEvents) < 2 {
+		return unavailable("at least two proven token events are required")
+	}
+	if tokenEvents[0].ReceivedAfterNS < 0 {
+		return unavailable("token event relative offsets must not be negative")
+	}
+
+	values := make([]float64, 0, len(tokenEvents)-1)
+	for index := 1; index < len(tokenEvents); index++ {
+		if tokenEvents[index].ReceivedAfterNS < 0 {
+			return unavailable("token event relative offsets must not be negative")
+		}
+		gapNS := tokenEvents[index].ReceivedAfterNS - tokenEvents[index-1].ReceivedAfterNS
+		if gapNS < 0 {
+			return unavailable("token event relative offsets are not ordered")
+		}
+		values = append(values, float64(gapNS)/float64(time.Millisecond))
+	}
+
+	minimum := values[0]
+	maximum := values[0]
+	total := 0.0
+	for _, value := range values {
+		total += value
+		if value < minimum {
+			minimum = value
+		}
+		if value > maximum {
+			maximum = value
+		}
+	}
+	result.Available = true
+	result.Count = len(values)
+	result.MeanMS = total / float64(len(values))
+	result.MinMS = minimum
+	result.MaxMS = maximum
+	result.ValuesMS = values
 	return result
 }
 

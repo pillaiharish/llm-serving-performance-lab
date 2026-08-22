@@ -35,6 +35,13 @@ type TokenizerAdapter string
 
 const TokenizerAdapterVLLM TokenizerAdapter = "vllm"
 
+type TokenTimingMode string
+
+const (
+	TokenTimingDisabled TokenTimingMode = "disabled"
+	TokenTimingVLLM     TokenTimingMode = "vllm"
+)
+
 type LoadMode string
 
 const (
@@ -89,8 +96,13 @@ type Benchmark struct {
 	Requests       int
 	WarmupRequests int
 	OpenLoop       OpenLoop
+	TokenTiming    TokenTiming
 	Safety         Safety
 	supplied       benchmarkFields
+}
+
+type TokenTiming struct {
+	Mode TokenTimingMode
 }
 
 type OpenLoop struct {
@@ -147,6 +159,7 @@ type Overrides struct {
 	MaxInFlightCeiling     *int
 	MaxInputTokens         *int
 	MaxOutputTokensCeiling *int
+	TokenTimingMode        *TokenTimingMode
 }
 
 func Default() Config {
@@ -163,6 +176,7 @@ func Default() Config {
 			Mode:        LoadModeClosedLoop,
 			Concurrency: 1,
 			Requests:    1,
+			TokenTiming: TokenTiming{Mode: TokenTimingDisabled},
 			Safety: Safety{
 				MaxConcurrency:  256,
 				MaxRequests:     10000,
@@ -268,6 +282,9 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	if overrides.MaxOutputTokensCeiling != nil {
 		c.Benchmark.Safety.MaxOutputTokens = *overrides.MaxOutputTokensCeiling
 	}
+	if overrides.TokenTimingMode != nil {
+		c.Benchmark.TokenTiming.Mode = *overrides.TokenTimingMode
+	}
 }
 
 func (c Config) Validate() error {
@@ -297,6 +314,11 @@ func (c Config) Validate() error {
 	}
 	if c.Request.MaxOutputTokens > c.Benchmark.Safety.MaxOutputTokens {
 		return fmt.Errorf("request.max_output_tokens exceeds benchmark.safety.max_output_tokens")
+	}
+	switch c.Benchmark.TokenTiming.Mode {
+	case TokenTimingDisabled, TokenTimingVLLM:
+	default:
+		return fmt.Errorf("benchmark.token_timing.mode must be disabled or vllm")
 	}
 	switch c.Workload.Mode {
 	case WorkloadModePrompt:

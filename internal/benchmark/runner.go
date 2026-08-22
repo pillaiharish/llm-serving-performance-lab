@@ -29,6 +29,9 @@ func (r *Runner) RunRequest(ctx context.Context, request Request) Result {
 		RunID:        request.RunID,
 		RequestID:    request.RequestID,
 		StreamEvents: make([]StreamEvent, 0),
+		TokenTiming: TokenTimingEvidence{
+			Source: TokenTimingSourceUnavailable,
+		},
 		Usage: TokenUsage{
 			Source: TokenUsageSourceUnavailable,
 		},

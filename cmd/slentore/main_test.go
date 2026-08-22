@@ -71,6 +71,7 @@ benchmark:
 		"--warmup-requests", "0",
 		"--drain-timeout", "5s",
 		"--api-key-env", "",
+		"--token-timing", "disabled",
 		"--output-dir", outputDirectory,
 	}, &stdout, &stderr, func(string) (string, bool) {
 		t.Fatal("environment lookup should not occur after clearing api_key_env")
@@ -89,7 +90,7 @@ benchmark:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.Workload.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 5 || metadata.Workload.Mode != "prompt" || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 6 || metadata.Workload.Mode != "prompt" || metadata.TokenTiming.Mode != "disabled" || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
 	if metadata.Drain.CancelledRequestIDs == nil {
@@ -128,6 +129,79 @@ benchmark:
 	}
 	if !strings.Contains(stdout.String(), "Artifacts:") || !strings.Contains(stdout.String(), metadata.RunID) {
 		t.Fatalf("summary missing artifact path: %q", stdout.String())
+	}
+}
+
+func TestRunBenchVLLMTokenTimingWritesAvailableRedactedITL(t *testing.T) {
+	serverConfig := fakeserver.DefaultConfig()
+	serverConfig.HeaderDelay = 0
+	serverConfig.FirstContentDelay = 0
+	serverConfig.ChunkInterval = time.Millisecond
+	serverConfig.UsageDelay = 0
+	serverConfig.DoneDelay = 0
+	serverConfig.TokenEvidence = fakeserver.TokenEvidenceSingleton
+	handler, err := fakeserver.NewHandler(serverConfig)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	var requested atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, readErr := io.ReadAll(request.Body)
+		if readErr != nil {
+			t.Errorf("read request: %v", readErr)
+		} else {
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Errorf("decode request: %v", err)
+			} else if value, ok := payload["return_token_ids"].(bool); ok && value {
+				requested.Store(true)
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		handler.ServeHTTP(writer, request)
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "fake-model", "--prompt", "private token timing prompt",
+		"--max-output-tokens", "4", "--token-timing", "vllm", "--timeout", "2s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exit != 0 || stderr.Len() != 0 || !requested.Load() {
+		t.Fatalf("exit=%d requested=%t stderr=%q stdout=%q", exit, requested.Load(), stderr.String(), stdout.String())
+	}
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	if metadata.SchemaVersion != 6 || metadata.TokenTiming.Mode != "vllm" || metadata.TokenTiming.Source != benchmark.TokenTimingSourceVLLM {
+		t.Fatalf("token timing metadata = %+v", metadata.TokenTiming)
+	}
+	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
+	var observation benchmark.RequestObservation
+	readJSON(t, filepath.Join(requestDirectory, "observation.json"), &observation)
+	if !observation.TokenTiming.Requested || !observation.TokenTiming.CompletedThroughDone || observation.TokenTiming.Source != benchmark.TokenTimingSourceVLLM {
+		t.Fatalf("token timing observation = %+v", observation.TokenTiming)
+	}
+	observedTokens := 0
+	for _, event := range observation.StreamEvents {
+		observedTokens += event.GeneratedTokenCount
+	}
+	var requestMetrics metrics.RequestMetrics
+	readJSON(t, filepath.Join(requestDirectory, "metrics.json"), &requestMetrics)
+	if observedTokens != 4 || !requestMetrics.ITL.Available || requestMetrics.ITL.Count != 3 || len(requestMetrics.ITL.ValuesMS) != 3 {
+		t.Fatalf("tokens/ITL = %d/%+v", observedTokens, requestMetrics.ITL)
+	}
+	combined := stdout.String() + stderr.String() + readTreeText(t, runDirectory)
+	for _, forbidden := range []string{"987654300", "987654301", "987654321", "987654322", "private token timing prompt", "Authorization"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("summary/artifacts retain forbidden value %q", forbidden)
+		}
+	}
+	for _, required := range []string{"Token timing:        vllm", "True ITL:   available", "ITL samples: 3"} {
+		if !strings.Contains(stdout.String(), required) {
+			t.Fatalf("summary missing %q: %q", required, stdout.String())
+		}
 	}
 }
 
@@ -307,6 +381,7 @@ func TestRunBenchAdmissionErrorsDoNotCreateArtifacts(t *testing.T) {
 		{name: "warmup over ceiling", args: []string{"--warmup-requests", "4", "--max-requests", "3"}, want: "warmup_requests"},
 		{name: "zero drain timeout", args: []string{"--drain-timeout", "0s"}, want: "drain_timeout"},
 		{name: "invalid drain timeout", args: []string{"--drain-timeout", "later"}, want: "--drain-timeout"},
+		{name: "invalid token timing", args: []string{"--token-timing", "automatic"}, want: "--token-timing"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -570,7 +645,7 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	if metadata.SchemaVersion != 5 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
+	if metadata.SchemaVersion != 6 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
 		t.Fatalf("open-loop metadata = %+v", metadata)
 	}
 	counts := *metadata.Measurement.Arrivals
@@ -607,11 +682,14 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 
 func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		args         []string
-		wantRequests int64
+		name          string
+		args          []string
+		wantRequests  int64
+		tokenEvidence fakeserver.TokenEvidenceMode
+		wantITL       bool
 	}{
 		{name: "closed-loop", args: []string{"--concurrency", "4", "--requests", "16", "--warmup-requests", "2"}, wantRequests: 18},
+		{name: "closed-loop-vllm-token-timing", args: []string{"--concurrency", "2", "--requests", "4", "--warmup-requests", "1", "--token-timing", "vllm"}, wantRequests: 5, tokenEvidence: fakeserver.TokenEvidenceSingleton, wantITL: true},
 		{name: "open-loop", args: []string{"--mode", "open-loop", "--request-rate", "20", "--duration", "250ms", "--max-in-flight", "8", "--warmup-requests", "2"}, wantRequests: 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -623,6 +701,9 @@ func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 			serverConfig.UsageDelay = 0
 			serverConfig.DoneDelay = 0
 			serverConfig.TokenizerFixture = true
+			if test.tokenEvidence != "" {
+				serverConfig.TokenEvidence = test.tokenEvidence
+			}
 			handler, err := fakeserver.NewHandler(serverConfig)
 			if err != nil {
 				t.Fatalf("NewHandler: %v", err)
@@ -648,11 +729,15 @@ func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 							Messages []struct {
 								Content string `json:"content"`
 							} `json:"messages"`
-							MaxTokens int `json:"max_tokens"`
+							MaxTokens      int   `json:"max_tokens"`
+							ReturnTokenIDs *bool `json:"return_token_ids"`
 						}
 						if err := json.Unmarshal(body, &payload); err != nil || len(payload.Messages) != 1 || payload.MaxTokens != 32 {
 							t.Errorf("request payload = %+v, err=%v", payload, err)
 						} else {
+							if (payload.ReturnTokenIDs != nil && *payload.ReturnTokenIDs) != test.wantITL {
+								t.Errorf("return_token_ids = %v, want requested=%t", payload.ReturnTokenIDs, test.wantITL)
+							}
 							promptsMu.Lock()
 							prompts[payload.Messages[0].Content] = struct{}{}
 							promptsMu.Unlock()
@@ -686,14 +771,22 @@ func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 			runDirectory := onlyRunDirectory(t, outputDirectory)
 			var metadata artifacts.RunMetadata
 			readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-			if metadata.SchemaVersion != 5 || metadata.Workload.Mode != "token_length" || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != 128 || metadata.Workload.Input.ResolvedTokens != 128 || metadata.Workload.Tokenizer == nil || metadata.Workload.Tokenizer.Contract != "rendered_chat_input" || len(metadata.Workload.Tokenizer.BehavioralFingerprintSHA256) != 64 {
+			if metadata.SchemaVersion != 6 || metadata.Workload.Mode != "token_length" || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != 128 || metadata.Workload.Input.ResolvedTokens != 128 || metadata.Workload.Tokenizer == nil || metadata.Workload.Tokenizer.Contract != "rendered_chat_input" || len(metadata.Workload.Tokenizer.BehavioralFingerprintSHA256) != 64 {
 				t.Fatalf("workload metadata = %+v", metadata.Workload)
+			}
+			var firstMetrics metrics.RequestMetrics
+			readJSON(t, filepath.Join(runDirectory, "measured", "requests", "req-000001", "metrics.json"), &firstMetrics)
+			if firstMetrics.ITL.Available != test.wantITL {
+				t.Fatalf("ITL = %+v, want available=%t", firstMetrics.ITL, test.wantITL)
 			}
 			if text := readText(t, filepath.Join(runDirectory, "run.json")); strings.Contains(text, generatedPrompt) || strings.Contains(text, "private-key") {
 				t.Fatal("run metadata persisted transient workload or secret")
 			}
 			if !strings.Contains(stdout.String(), "Input resolved:      128 tokens") || strings.Contains(stdout.String(), generatedPrompt) {
 				t.Fatalf("unsafe or incomplete summary: %q", stdout.String())
+			}
+			if test.wantITL && !strings.Contains(stdout.String(), "Measured requests with true ITL: 4 / 4") {
+				t.Fatalf("token timing summary missing measured availability count: %q", stdout.String())
 			}
 		})
 	}

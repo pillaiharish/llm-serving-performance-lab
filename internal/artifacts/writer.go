@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 const (
 	RunStatusCompleted = "completed"
@@ -52,6 +53,11 @@ type WorkloadInputMetadata struct {
 
 type WorkloadOutputMetadata struct {
 	RequestedMaxTokens int `json:"requested_max_tokens"`
+}
+
+type TokenTimingMetadata struct {
+	Mode   string `json:"mode"`
+	Source string `json:"source,omitempty"`
 }
 
 type LoadMetadata struct {
@@ -127,6 +133,7 @@ type RunMetadata struct {
 	Temperature       float64                     `json:"temperature"`
 	RequestTimeout    string                      `json:"request_timeout"`
 	Workload          WorkloadMetadata            `json:"workload"`
+	TokenTiming       TokenTimingMetadata         `json:"token_timing"`
 	SafetyLimits      SafetyLimits                `json:"safety_limits"`
 	Load              LoadMetadata                `json:"load"`
 	ClientDiagnostics benchmark.ClientDiagnostics `json:"client_diagnostics"`
@@ -305,6 +312,9 @@ func validateRequests(metadata RunMetadata, requests []RequestArtifact) (phaseAr
 		if request.Metrics.RunID != observation.RunID || request.Metrics.RequestID != observation.RequestID {
 			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request observation and metrics identities differ for %s", observation.RequestID)
 		}
+		if err := validateRequestTokenTiming(metadata.TokenTiming, request); err != nil {
+			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request %s token timing: %w", observation.RequestID, err)
+		}
 		key := string(request.Phase) + ":" + observation.RequestID
 		if _, exists := seen[key]; exists {
 			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("duplicate request ID %s in phase %s", observation.RequestID, request.Phase)
@@ -326,6 +336,9 @@ func validateRequests(metadata RunMetadata, requests []RequestArtifact) (phaseAr
 }
 
 func validateMetadata(metadata RunMetadata, warmupArtifacts, measuredArtifacts phaseArtifactSummary, requests []RequestArtifact, arrivals []benchmark.ArrivalRecord) error {
+	if err := validateTokenTimingMetadata(metadata.TokenTiming); err != nil {
+		return err
+	}
 	if err := validateWorkload(metadata); err != nil {
 		return err
 	}
@@ -424,6 +437,66 @@ func validateMetadata(metadata RunMetadata, warmupArtifacts, measuredArtifacts p
 		if metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.RunStatus != RunStatusFailed || metadata.Measurement.Arrivals == nil || metadata.Measurement.Arrivals.ClientLimited+metadata.Measurement.Arrivals.SchedulerLimited == 0 || metadata.Drain.ParentCancelled {
 			return fmt.Errorf("invalid load-delivery error classification")
 		}
+	}
+	return nil
+}
+
+func validateTokenTimingMetadata(value TokenTimingMetadata) error {
+	switch value.Mode {
+	case "disabled":
+		if value.Source != "" {
+			return fmt.Errorf("disabled token timing must not claim a source")
+		}
+	case "vllm":
+		if value.Source != benchmark.TokenTimingSourceVLLM {
+			return fmt.Errorf("vllm token timing source is invalid")
+		}
+	default:
+		return fmt.Errorf("invalid token timing mode %q", value.Mode)
+	}
+	return nil
+}
+
+func validateRequestTokenTiming(run TokenTimingMetadata, request RequestArtifact) error {
+	evidence := request.Observation.TokenTiming
+	switch run.Mode {
+	case "disabled":
+		if evidence.Requested || evidence.Source != benchmark.TokenTimingSourceUnavailable {
+			return fmt.Errorf("disabled run contains requested token evidence")
+		}
+	case "vllm":
+		if !evidence.Requested || evidence.Source != benchmark.TokenTimingSourceVLLM {
+			return fmt.Errorf("vllm run is missing requested token evidence")
+		}
+	}
+	for _, event := range request.Observation.StreamEvents {
+		if event.GeneratedTokenCount < 0 {
+			return fmt.Errorf("stream event generated token count must not be negative")
+		}
+		if !event.TokenIDsPresent && event.GeneratedTokenCount != 0 {
+			return fmt.Errorf("stream event generated token count requires token_ids presence")
+		}
+	}
+
+	itl := request.Metrics.ITL
+	if itl.Available {
+		if itl.Source != benchmark.TokenTimingSourceVLLM || itl.Count <= 0 || len(itl.ValuesMS) != itl.Count || itl.Reason != "" {
+			return fmt.Errorf("available ITL structure is invalid")
+		}
+		if !request.Observation.Usage.Available || itl.Count != request.Observation.Usage.OutputTokens-1 {
+			return fmt.Errorf("available ITL count does not match server usage")
+		}
+		for _, value := range append([]float64{itl.MeanMS, itl.MinMS, itl.MaxMS}, itl.ValuesMS...) {
+			if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				return fmt.Errorf("available ITL values must be finite and non-negative")
+			}
+		}
+	} else if itl.Reason == "" || itl.Count != 0 || len(itl.ValuesMS) != 0 {
+		return fmt.Errorf("unavailable ITL structure is invalid")
+	}
+	want := metrics.Calculate(request.Observation).ITL
+	if !reflect.DeepEqual(itl, want) {
+		return fmt.Errorf("ITL does not match raw observation evidence")
 	}
 	return nil
 }

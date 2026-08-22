@@ -86,6 +86,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	var tokenizerURL string
 	var maxInputTokensCeiling int
 	var maxOutputTokensCeiling int
+	var tokenTimingText string
 
 	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
 	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
@@ -114,6 +115,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.StringVar(&tokenizerURL, "tokenizer-url", "", "exact vLLM /tokenize endpoint")
 	flags.IntVar(&maxInputTokensCeiling, "max-input-tokens-ceiling", 0, "client safety ceiling for target input tokens")
 	flags.IntVar(&maxOutputTokensCeiling, "max-output-tokens-ceiling", 0, "client safety ceiling for requested output tokens")
+	flags.StringVar(&tokenTimingText, "token-timing", "", "token timing evidence: disabled or vllm")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -243,6 +245,14 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	if visited["max-output-tokens-ceiling"] {
 		overrides.MaxOutputTokensCeiling = &maxOutputTokensCeiling
 	}
+	if visited["token-timing"] {
+		mode, parseErr := parseCLITokenTimingMode(tokenTimingText)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "error: --token-timing: %v\n", parseErr)
+			return 2
+		}
+		overrides.TokenTimingMode = &mode
+	}
 	resolved.ApplyOverrides(overrides)
 	if err := resolved.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
@@ -289,7 +299,9 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		return 2
 	}
 
-	client, err := openai.NewClient(httpClient, resolved.Endpoint.BaseURL, apiKey)
+	client, err := openai.NewClientWithOptions(httpClient, resolved.Endpoint.BaseURL, apiKey, openai.ClientOptions{
+		TokenEvidenceMode: openai.TokenEvidenceMode(resolved.Benchmark.TokenTiming.Mode),
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "error: create OpenAI client: %v\n", err)
 		return 2
@@ -366,6 +378,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		Temperature:     resolved.Request.Temperature,
 		RequestTimeout:  resolved.Runtime.Timeout.String(),
 		Workload:        workloadMetadata(prepared),
+		TokenTiming:     tokenTimingMetadata(resolved.Benchmark.TokenTiming.Mode),
 		SafetyLimits: artifacts.SafetyLimits{
 			MaxConcurrency:  resolved.Benchmark.Safety.MaxConcurrency,
 			MaxRequests:     resolved.Benchmark.Safety.MaxRequests,
@@ -398,7 +411,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, lifecycleArrivals(lifecycleResult))
-	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Workload, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
+	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Workload, metadata.TokenTiming, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
 	if artifactErr != nil {
 		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
 		return 1
@@ -556,6 +569,14 @@ func workloadMetadata(prepared workload.PreparedWorkload) artifacts.WorkloadMeta
 	return metadata
 }
 
+func tokenTimingMetadata(mode config.TokenTimingMode) artifacts.TokenTimingMetadata {
+	metadata := artifacts.TokenTimingMetadata{Mode: string(mode)}
+	if mode == config.TokenTimingVLLM {
+		metadata.Source = benchmark.TokenTimingSourceVLLM
+	}
+	return metadata
+}
+
 func parseCLILoadMode(value string) (config.LoadMode, error) {
 	switch value {
 	case "closed-loop":
@@ -585,9 +606,21 @@ func parseCLITokenizerAdapter(value string) (config.TokenizerAdapter, error) {
 	return config.TokenizerAdapterVLLM, nil
 }
 
-func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, prepared artifacts.WorkloadMetadata, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
+func parseCLITokenTimingMode(value string) (config.TokenTimingMode, error) {
+	switch value {
+	case "disabled":
+		return config.TokenTimingDisabled, nil
+	case "vllm":
+		return config.TokenTimingVLLM, nil
+	default:
+		return "", fmt.Errorf("must be disabled or vllm")
+	}
+}
+
+func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, prepared artifacts.WorkloadMetadata, tokenTiming artifacts.TokenTimingMetadata, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
 	fmt.Fprintf(writer, "Run:                 %s\n", runID)
 	fmt.Fprintf(writer, "Workload mode:       %s\n", prepared.Mode)
+	fmt.Fprintf(writer, "Token timing:        %s\n", tokenTiming.Mode)
 	if prepared.Input != nil && prepared.Tokenizer != nil {
 		fmt.Fprintf(writer, "Input target:        %d tokens\n", prepared.Input.TargetTokens)
 		fmt.Fprintf(writer, "Input resolved:      %d tokens\n", prepared.Input.ResolvedTokens)
@@ -647,6 +680,14 @@ func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.L
 			fmt.Fprintln(writer)
 			printRequestSummary(writer, measured.Observation, measured.Metrics)
 		}
+	} else if tokenTiming.Mode == "vllm" && measurement.Successful > 0 {
+		available := 0
+		for _, request := range requestArtifacts {
+			if request.Phase == benchmark.RequestPhaseMeasured && request.Outcome == benchmark.OutcomeSucceeded && request.Metrics.ITL.Available {
+				available++
+			}
+		}
+		fmt.Fprintf(writer, "Measured requests with true ITL: %d / %d\n", available, measurement.Successful)
 	}
 	if artifactPath != "" {
 		fmt.Fprintf(writer, "Artifacts:  %s\n", artifactPath)
@@ -681,7 +722,14 @@ func printRequestSummary(writer io.Writer, observation benchmark.RequestObservat
 	} else {
 		fmt.Fprintf(writer, "ICL mean:   unavailable (%s)\n", requestMetrics.InterChunkLatency.Reason)
 	}
-	fmt.Fprintf(writer, "ITL:        unavailable (%s)\n", requestMetrics.ITL.Reason)
+	if requestMetrics.ITL.Available {
+		fmt.Fprintln(writer, "True ITL:   available")
+		fmt.Fprintf(writer, "ITL source: %s\n", requestMetrics.ITL.Source)
+		fmt.Fprintf(writer, "ITL mean:   %.3f ms\n", requestMetrics.ITL.MeanMS)
+		fmt.Fprintf(writer, "ITL samples: %d\n", requestMetrics.ITL.Count)
+	} else {
+		fmt.Fprintf(writer, "True ITL:   unavailable (%s)\n", requestMetrics.ITL.Reason)
+	}
 	if observation.Error != "" {
 		fmt.Fprintf(writer, "Error:      %s\n", observation.Error)
 	}
