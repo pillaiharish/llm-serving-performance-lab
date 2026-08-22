@@ -11,12 +11,13 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = aggregate.SchemaVersion
 
 const (
 	RunStatusCompleted = "completed"
@@ -134,6 +135,7 @@ type RunMetadata struct {
 	RequestTimeout    string                      `json:"request_timeout"`
 	Workload          WorkloadMetadata            `json:"workload"`
 	TokenTiming       TokenTimingMetadata         `json:"token_timing"`
+	SLO               aggregate.SLOConfig         `json:"slo"`
 	SafetyLimits      SafetyLimits                `json:"safety_limits"`
 	Load              LoadMetadata                `json:"load"`
 	ClientDiagnostics benchmark.ClientDiagnostics `json:"client_diagnostics"`
@@ -155,10 +157,11 @@ type RequestArtifact struct {
 type Writer struct {
 	outputDir string
 	writeFile func(string, any) error
+	writeCSV  func(string, aggregate.RunSummary) error
 }
 
 func NewWriter(outputDir string) *Writer {
-	return &Writer{outputDir: outputDir, writeFile: writeJSON}
+	return &Writer{outputDir: outputDir, writeFile: writeJSON, writeCSV: writeSummaryCSV}
 }
 
 // Write stages a complete lifecycle run and atomically renames it into place.
@@ -199,6 +202,10 @@ func (w *Writer) WriteWithArrivals(metadata RunMetadata, requests []RequestArtif
 	if err := validateMetadata(metadata, warmupSummary, measuredSummary, ordered, orderedArrivals); err != nil {
 		return "", err
 	}
+	runSummary, err := CalculateSummary(metadata, ordered, orderedArrivals)
+	if err != nil {
+		return "", fmt.Errorf("calculate run summary: %w", err)
+	}
 
 	if err := os.MkdirAll(w.outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("create artifact output directory: %w", err)
@@ -226,6 +233,16 @@ func (w *Writer) WriteWithArrivals(metadata RunMetadata, requests []RequestArtif
 		writeFile = writeJSON
 	}
 	if err := writeFile(filepath.Join(temporaryDirectory, "run.json"), metadata); err != nil {
+		return "", err
+	}
+	if err := writeFile(filepath.Join(temporaryDirectory, "summary.json"), runSummary); err != nil {
+		return "", err
+	}
+	writeCSV := w.writeCSV
+	if writeCSV == nil {
+		writeCSV = writeSummaryCSV
+	}
+	if err := writeCSV(filepath.Join(temporaryDirectory, "summary.csv"), runSummary); err != nil {
 		return "", err
 	}
 	warmupRoot := filepath.Join(temporaryDirectory, "warmup", "requests")
@@ -707,6 +724,17 @@ func writeJSONLines(path string, values []benchmark.ArrivalRecord) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeSummaryCSV(path string, summary aggregate.RunSummary) error {
+	encoded, err := aggregate.MarshalCSV(summary)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", filepath.Base(path), err)
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }
