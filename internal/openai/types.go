@@ -1,12 +1,13 @@
 package openai
 
 type chatCompletionRequest struct {
-	Model         string        `json:"model"`
-	Messages      []message     `json:"messages"`
-	MaxTokens     int           `json:"max_tokens"`
-	Temperature   float64       `json:"temperature"`
-	Stream        bool          `json:"stream"`
-	StreamOptions streamOptions `json:"stream_options"`
+	Model          string        `json:"model"`
+	Messages       []message     `json:"messages"`
+	MaxTokens      int           `json:"max_tokens"`
+	Temperature    float64       `json:"temperature"`
+	Stream         bool          `json:"stream"`
+	StreamOptions  streamOptions `json:"stream_options"`
+	ReturnTokenIDs *bool         `json:"return_token_ids,omitempty"`
 }
 
 type message struct {
@@ -27,6 +28,7 @@ type choice struct {
 	Index        int     `json:"index"`
 	Delta        delta   `json:"delta"`
 	FinishReason *string `json:"finish_reason"`
+	TokenIDs     *[]int  `json:"token_ids"`
 }
 
 type delta struct {

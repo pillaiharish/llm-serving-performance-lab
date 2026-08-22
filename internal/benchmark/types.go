@@ -2,7 +2,11 @@ package benchmark
 
 import "time"
 
-const TokenUsageSourceUnavailable = "not_available"
+const (
+	TokenUsageSourceUnavailable  = "not_available"
+	TokenTimingSourceUnavailable = "not_available"
+	TokenTimingSourceVLLM        = "vllm_return_token_ids_client_receive"
+)
 
 type LoadMode string
 
@@ -81,20 +85,33 @@ type RequestObservation struct {
 	CompletedAt      *time.Time `json:"completed_at"`
 	CompletedAfterNS *int64     `json:"completed_after_ns"`
 
-	StreamEvents      []StreamEvent `json:"stream_events"`
-	Usage             TokenUsage    `json:"usage"`
-	ResponseBodyBytes int64         `json:"response_body_bytes"`
-	StatusCode        int           `json:"status_code"`
-	FinishReason      string        `json:"finish_reason,omitempty"`
-	Error             string        `json:"error,omitempty"`
+	StreamEvents      []StreamEvent       `json:"stream_events"`
+	TokenTiming       TokenTimingEvidence `json:"token_timing"`
+	Usage             TokenUsage          `json:"usage"`
+	ResponseBodyBytes int64               `json:"response_body_bytes"`
+	StatusCode        int                 `json:"status_code"`
+	FinishReason      string              `json:"finish_reason,omitempty"`
+	Error             string              `json:"error,omitempty"`
 }
 
 type StreamEvent struct {
-	Sequence        int       `json:"sequence"`
-	ReceivedAt      time.Time `json:"received_at"`
-	ReceivedAfterNS int64     `json:"received_after_ns"`
-	HasContent      bool      `json:"has_content"`
-	ContentBytes    int       `json:"content_bytes"`
+	Sequence            int       `json:"sequence"`
+	ReceivedAt          time.Time `json:"received_at"`
+	ReceivedAfterNS     int64     `json:"received_after_ns"`
+	HasContent          bool      `json:"has_content"`
+	ContentBytes        int       `json:"content_bytes"`
+	TokenIDsPresent     bool      `json:"token_ids_present"`
+	GeneratedTokenCount int       `json:"generated_token_count"`
+}
+
+// TokenTimingEvidence records only the safe request-level facts needed to
+// decide whether individual generated-token arrivals were observable. Raw
+// token IDs are deliberately excluded.
+type TokenTimingEvidence struct {
+	Requested            bool   `json:"requested"`
+	Source               string `json:"source"`
+	CompletedThroughDone bool   `json:"completed_through_done"`
+	InvalidReason        string `json:"invalid_reason,omitempty"`
 }
 
 type TokenUsage struct {

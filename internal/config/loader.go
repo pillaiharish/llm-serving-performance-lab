@@ -52,12 +52,17 @@ type fileCapture struct {
 }
 
 type fileBenchmark struct {
-	Mode           *LoadMode     `yaml:"mode"`
-	Concurrency    *int          `yaml:"concurrency"`
-	Requests       *int          `yaml:"requests"`
-	WarmupRequests *int          `yaml:"warmup_requests"`
-	OpenLoop       *fileOpenLoop `yaml:"open_loop"`
-	Safety         fileSafety    `yaml:"safety"`
+	Mode           *LoadMode        `yaml:"mode"`
+	Concurrency    *int             `yaml:"concurrency"`
+	Requests       *int             `yaml:"requests"`
+	WarmupRequests *int             `yaml:"warmup_requests"`
+	OpenLoop       *fileOpenLoop    `yaml:"open_loop"`
+	TokenTiming    *fileTokenTiming `yaml:"token_timing"`
+	Safety         fileSafety       `yaml:"safety"`
+}
+
+type fileTokenTiming struct {
+	Mode *TokenTimingMode `yaml:"mode"`
 }
 
 type fileOpenLoop struct {
@@ -177,6 +182,9 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.WarmupRequests != nil {
 		resolved.Benchmark.WarmupRequests = *raw.Benchmark.WarmupRequests
+	}
+	if raw.Benchmark.TokenTiming != nil && raw.Benchmark.TokenTiming.Mode != nil {
+		resolved.Benchmark.TokenTiming.Mode = *raw.Benchmark.TokenTiming.Mode
 	}
 	if raw.Benchmark.Safety.MaxConcurrency != nil {
 		resolved.Benchmark.Safety.MaxConcurrency = *raw.Benchmark.Safety.MaxConcurrency

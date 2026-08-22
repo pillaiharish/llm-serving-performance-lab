@@ -17,15 +17,39 @@ import (
 )
 
 type Client struct {
-	httpClient *http.Client
-	endpoint   string
-	apiKey     string
-	now        func() time.Time
+	httpClient        *http.Client
+	endpoint          string
+	apiKey            string
+	tokenEvidenceMode TokenEvidenceMode
+	now               func() time.Time
+}
+
+type TokenEvidenceMode string
+
+const (
+	TokenEvidenceDisabled TokenEvidenceMode = "disabled"
+	TokenEvidenceVLLM     TokenEvidenceMode = "vllm"
+)
+
+type ClientOptions struct {
+	TokenEvidenceMode TokenEvidenceMode
 }
 
 func NewClient(httpClient *http.Client, baseURL, apiKey string) (*Client, error) {
+	return NewClientWithOptions(httpClient, baseURL, apiKey, ClientOptions{TokenEvidenceMode: TokenEvidenceDisabled})
+}
+
+func NewClientWithOptions(httpClient *http.Client, baseURL, apiKey string, options ClientOptions) (*Client, error) {
 	if httpClient == nil {
 		return nil, fmt.Errorf("HTTP client is required")
+	}
+	if options.TokenEvidenceMode == "" {
+		options.TokenEvidenceMode = TokenEvidenceDisabled
+	}
+	switch options.TokenEvidenceMode {
+	case TokenEvidenceDisabled, TokenEvidenceVLLM:
+	default:
+		return nil, fmt.Errorf("token evidence mode must be disabled or vllm")
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -34,10 +58,11 @@ func NewClient(httpClient *http.Client, baseURL, apiKey string) (*Client, error)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/chat/completions"
 	parsed.RawPath = ""
 	return &Client{
-		httpClient: httpClient,
-		endpoint:   parsed.String(),
-		apiKey:     apiKey,
-		now:        time.Now,
+		httpClient:        httpClient,
+		endpoint:          parsed.String(),
+		apiKey:            apiKey,
+		tokenEvidenceMode: options.TokenEvidenceMode,
+		now:               time.Now,
 	}, nil
 }
 
@@ -47,6 +72,15 @@ func NewClient(httpClient *http.Client, baseURL, apiKey string) (*Client, error)
 func (c *Client) Execute(ctx context.Context, request benchmark.Request, observation *benchmark.RequestObservation) (returnErr error) {
 	if observation == nil {
 		return fmt.Errorf("request observation is required")
+	}
+
+	observation.TokenTiming = benchmark.TokenTimingEvidence{Source: benchmark.TokenTimingSourceUnavailable}
+	var returnTokenIDs *bool
+	if c.tokenEvidenceMode == TokenEvidenceVLLM {
+		requested := true
+		returnTokenIDs = &requested
+		observation.TokenTiming.Requested = true
+		observation.TokenTiming.Source = benchmark.TokenTimingSourceVLLM
 	}
 
 	payload, err := json.Marshal(chatCompletionRequest{
@@ -61,6 +95,7 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 		StreamOptions: streamOptions{
 			IncludeUsage: true,
 		},
+		ReturnTokenIDs: returnTokenIDs,
 	})
 	if err != nil {
 		return fmt.Errorf("encode chat completion request: %w", err)
@@ -136,7 +171,7 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 
 		if data == "[DONE]" {
 			seenDone = true
-			return appendStreamEvent(observation, received, false, 0)
+			return appendStreamEvent(observation, received, false, 0, false, 0)
 		}
 
 		var chunk streamChunk
@@ -146,6 +181,8 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 
 		contentBytes := 0
 		hasContent := false
+		tokenIDsPresent := false
+		generatedTokenCount := 0
 		for _, candidate := range chunk.Choices {
 			if candidate.Index != 0 {
 				continue
@@ -156,6 +193,15 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 			}
 			if candidate.FinishReason != nil && *candidate.FinishReason != "" {
 				observation.FinishReason = *candidate.FinishReason
+			}
+			if candidate.TokenIDs != nil {
+				tokenIDsPresent = true
+				generatedTokenCount = len(*candidate.TokenIDs)
+				for _, tokenID := range *candidate.TokenIDs {
+					if tokenID < 0 && observation.TokenTiming.InvalidReason == "" {
+						observation.TokenTiming.InvalidReason = "SSE token_ids contained a negative generated token ID"
+					}
+				}
 			}
 			break
 		}
@@ -172,7 +218,7 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 			}
 		}
 
-		return appendStreamEvent(observation, received, hasContent, contentBytes)
+		return appendStreamEvent(observation, received, hasContent, contentBytes, tokenIDsPresent, generatedTokenCount)
 	})
 	if err != nil {
 		return err
@@ -180,10 +226,11 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 	if !seenDone {
 		return ErrUnexpectedEOF
 	}
+	observation.TokenTiming.CompletedThroughDone = true
 	return nil
 }
 
-func appendStreamEvent(observation *benchmark.RequestObservation, received time.Time, hasContent bool, contentBytes int) error {
+func appendStreamEvent(observation *benchmark.RequestObservation, received time.Time, hasContent bool, contentBytes int, tokenIDsPresent bool, generatedTokenCount int) error {
 	if observation.RequestStartedAt == nil {
 		return fmt.Errorf("request start timestamp is required before stream events")
 	}
@@ -207,11 +254,13 @@ func appendStreamEvent(observation *benchmark.RequestObservation, received time.
 		observation.LastContentAfterNS = &lastOffset
 	}
 	observation.StreamEvents = append(observation.StreamEvents, benchmark.StreamEvent{
-		Sequence:        len(observation.StreamEvents) + 1,
-		ReceivedAt:      received,
-		ReceivedAfterNS: receivedAfterNS,
-		HasContent:      hasContent,
-		ContentBytes:    contentBytes,
+		Sequence:            len(observation.StreamEvents) + 1,
+		ReceivedAt:          received,
+		ReceivedAfterNS:     receivedAfterNS,
+		HasContent:          hasContent,
+		ContentBytes:        contentBytes,
+		TokenIDsPresent:     tokenIDsPresent,
+		GeneratedTokenCount: generatedTokenCount,
 	})
 	return nil
 }

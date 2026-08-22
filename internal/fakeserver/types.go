@@ -3,10 +3,11 @@ package fakeserver
 import "encoding/json"
 
 type chatCompletionRequest struct {
-	Model         string            `json:"model"`
-	Messages      []json.RawMessage `json:"messages"`
-	Stream        bool              `json:"stream"`
-	StreamOptions streamOptions     `json:"stream_options"`
+	Model          string            `json:"model"`
+	Messages       []json.RawMessage `json:"messages"`
+	Stream         bool              `json:"stream"`
+	StreamOptions  streamOptions     `json:"stream_options"`
+	ReturnTokenIDs *bool             `json:"return_token_ids"`
 }
 
 type streamOptions struct {
@@ -14,14 +15,16 @@ type streamOptions struct {
 }
 
 type streamChunk struct {
-	Choices []streamChoice `json:"choices"`
-	Usage   *streamUsage   `json:"usage,omitempty"`
+	Choices        []streamChoice `json:"choices"`
+	Usage          *streamUsage   `json:"usage,omitempty"`
+	PromptTokenIDs []int          `json:"prompt_token_ids,omitempty"`
 }
 
 type streamChoice struct {
 	Index        int               `json:"index"`
 	Delta        map[string]string `json:"delta"`
 	FinishReason *string           `json:"finish_reason,omitempty"`
+	TokenIDs     *[]int            `json:"token_ids,omitempty"`
 }
 
 type streamUsage struct {
