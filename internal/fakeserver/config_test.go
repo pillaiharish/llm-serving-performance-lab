@@ -8,7 +8,7 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	got := DefaultConfig()
-	if got.Listen != "127.0.0.1:18080" || got.Mode != ModeNormal || got.HeaderDelay != 50*time.Millisecond || got.FirstContentDelay != 100*time.Millisecond || got.ChunkInterval != 20*time.Millisecond || got.ContentChunks != 4 || got.UsageDelay != 10*time.Millisecond || got.DoneDelay != 10*time.Millisecond || got.PromptTokens != 16 || got.CompletionTokens != 4 {
+	if got.Listen != "127.0.0.1:18080" || got.Mode != ModeNormal || got.TokenEvidence != TokenEvidenceDisabled || got.HeaderDelay != 50*time.Millisecond || got.FirstContentDelay != 100*time.Millisecond || got.ChunkInterval != 20*time.Millisecond || got.ContentChunks != 4 || got.UsageDelay != 10*time.Millisecond || got.DoneDelay != 10*time.Millisecond || got.PromptTokens != 16 || got.CompletionTokens != 4 {
 		t.Fatalf("unexpected defaults: %+v", got)
 	}
 	if got.TotalTokens() != 20 {
@@ -31,6 +31,9 @@ func TestConfigValidation(t *testing.T) {
 		{name: "zero port", alter: func(c *Config) { c.Listen = "127.0.0.1:0" }, wantError: "port must"},
 		{name: "invalid port", alter: func(c *Config) { c.Listen = "127.0.0.1:not-a-port" }, wantError: "port must"},
 		{name: "unknown mode", alter: func(c *Config) { c.Mode = "unknown" }, wantError: "mode must"},
+		{name: "unknown token evidence", alter: func(c *Config) { c.TokenEvidence = "unknown" }, wantError: "token evidence"},
+		{name: "singleton count mismatch", alter: func(c *Config) { c.TokenEvidence = TokenEvidenceSingleton; c.CompletionTokens = 3 }, wantError: "equal content chunks"},
+		{name: "batched too short", alter: func(c *Config) { c.TokenEvidence = TokenEvidenceBatched; c.ContentChunks = 1; c.CompletionTokens = 1 }, wantError: "at least two"},
 		{name: "negative header delay", alter: func(c *Config) { c.HeaderDelay = -time.Nanosecond }, wantError: "header delay"},
 		{name: "negative first content delay", alter: func(c *Config) { c.FirstContentDelay = -time.Nanosecond }, wantError: "first content delay"},
 		{name: "negative chunk interval", alter: func(c *Config) { c.ChunkInterval = -time.Nanosecond }, wantError: "chunk interval"},
@@ -48,6 +51,18 @@ func TestConfigValidation(t *testing.T) {
 			err := config.Validate()
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("Validate error = %v, want substring %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestConfigAcceptsTokenEvidenceFixtures(t *testing.T) {
+	for _, mode := range []TokenEvidenceMode{TokenEvidenceDisabled, TokenEvidenceSingleton, TokenEvidenceBatched, TokenEvidenceMissing, TokenEvidenceMismatch} {
+		t.Run(string(mode), func(t *testing.T) {
+			config := DefaultConfig()
+			config.TokenEvidence = mode
+			if err := config.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
 			}
 		})
 	}

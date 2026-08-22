@@ -101,6 +101,62 @@ func TestRunCoordinatorReachesEffectiveConcurrencyWithRealClient(t *testing.T) {
 	}
 }
 
+func TestConcurrentVLLMTokenEvidenceRemainsRequestLocal(t *testing.T) {
+	const (
+		requests    = 64
+		concurrency = 32
+	)
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 0
+	config.ChunkInterval = 0
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	config.TokenEvidence = fakeserver.TokenEvidenceSingleton
+	handler, err := fakeserver.NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = concurrency
+	transport.MaxIdleConnsPerHost = concurrency
+	transport.MaxConnsPerHost = concurrency
+	defer transport.CloseIdleConnections()
+	client, err := openai.NewClientWithOptions(&http.Client{Transport: transport}, server.URL+"/v1", "", openai.ClientOptions{TokenEvidenceMode: openai.TokenEvidenceVLLM})
+	if err != nil {
+		t.Fatalf("NewClientWithOptions: %v", err)
+	}
+	result, err := benchmark.NewRunCoordinator(benchmark.NewRunner(client)).Run(context.Background(), benchmark.RunPlan{
+		RunID: "run-token-isolation", RequestTemplate: benchmark.Request{Model: "fake-model", Prompt: "private", MaxOutputTokens: 4},
+		Concurrency: concurrency, Requests: requests, RequestTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Completed) != requests {
+		t.Fatalf("completed = %d, want %d", len(result.Completed), requests)
+	}
+	for _, completed := range result.Completed {
+		observation := completed.Result.Observation
+		if completed.Result.Err != nil || len(observation.StreamEvents) != 8 {
+			t.Fatalf("request %s result = err=%v events=%d", observation.RequestID, completed.Result.Err, len(observation.StreamEvents))
+		}
+		observedTokens := 0
+		for index, event := range observation.StreamEvents {
+			if event.Sequence != index+1 {
+				t.Fatalf("request %s event sequence = %+v", observation.RequestID, observation.StreamEvents)
+			}
+			observedTokens += event.GeneratedTokenCount
+		}
+		calculated := metrics.Calculate(observation)
+		if observedTokens != 4 || !calculated.ITL.Available || calculated.ITL.Count != 3 {
+			t.Fatalf("request %s tokens/ITL = %d/%+v", observation.RequestID, observedTokens, calculated.ITL)
+		}
+	}
+}
+
 func TestLifecycleCoordinatorUsesSharedClientWithoutPhaseOverlap(t *testing.T) {
 	const (
 		warmupRequests   = 4
@@ -215,7 +271,9 @@ func TestOpenLoopLifecycleUsesRealClientAndFakeServer(t *testing.T) {
 	config.HeaderDelay = 0
 	config.FirstContentDelay = 0
 	config.ChunkInterval = 0
-	config.ContentChunks = 1
+	config.ContentChunks = 2
+	config.CompletionTokens = 2
+	config.TokenEvidence = fakeserver.TokenEvidenceSingleton
 	config.UsageDelay = 0
 	config.DoneDelay = 0
 	fakeHandler, err := fakeserver.NewHandler(config)
@@ -234,7 +292,7 @@ func TestOpenLoopLifecycleUsesRealClientAndFakeServer(t *testing.T) {
 	transport.MaxIdleConnsPerHost = 16
 	transport.MaxConnsPerHost = 16
 	defer transport.CloseIdleConnections()
-	client, err := openai.NewClient(&http.Client{Transport: transport}, server.URL+"/v1", "")
+	client, err := openai.NewClientWithOptions(&http.Client{Transport: transport}, server.URL+"/v1", "", openai.ClientOptions{TokenEvidenceMode: openai.TokenEvidenceVLLM})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -256,6 +314,11 @@ func TestOpenLoopLifecycleUsesRealClientAndFakeServer(t *testing.T) {
 	for _, arrival := range append(append([]benchmark.ArrivalRecord{}, result.Warmup.Arrivals...), result.Measurement.Arrivals...) {
 		if arrival.Disposition != benchmark.ArrivalStarted || arrival.RequestID == nil || arrival.ActualStartedAt == nil || arrival.SchedulerLagNS == nil || *arrival.SchedulerLagNS < 0 {
 			t.Fatalf("arrival evidence = %+v", arrival)
+		}
+	}
+	for _, completed := range append(append([]benchmark.CompletedRequest{}, result.Warmup.Completed...), result.Measurement.Completed...) {
+		if calculated := metrics.Calculate(completed.Result.Observation); !calculated.ITL.Available || calculated.ITL.Count != 1 {
+			t.Fatalf("request %s ITL = %+v", completed.Result.Observation.RequestID, calculated.ITL)
 		}
 	}
 }

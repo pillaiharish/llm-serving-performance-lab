@@ -2,6 +2,7 @@ package fakeserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -77,6 +78,78 @@ func TestSlentoreAgainstControlledNormalStream(t *testing.T) {
 	}
 }
 
+func TestSlentoreVLLMTokenEvidenceFixtures(t *testing.T) {
+	tests := []struct {
+		mode      fakeserver.TokenEvidenceMode
+		available bool
+		reason    string
+	}{
+		{mode: fakeserver.TokenEvidenceSingleton, available: true},
+		{mode: fakeserver.TokenEvidenceBatched, reason: "multiple generated token IDs"},
+		{mode: fakeserver.TokenEvidenceMissing, reason: "does not match"},
+		{mode: fakeserver.TokenEvidenceMismatch, reason: "does not match"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.mode), func(t *testing.T) {
+			config := fakeserver.DefaultConfig()
+			config.HeaderDelay = 0
+			config.FirstContentDelay = 0
+			config.ChunkInterval = time.Millisecond
+			config.UsageDelay = 0
+			config.DoneDelay = 0
+			config.TokenEvidence = test.mode
+			result, calculated := executeWithMode(t, config, openai.TokenEvidenceVLLM)
+			if result.Err != nil {
+				t.Fatalf("request failed for evidence-only defect: %v", result.Err)
+			}
+			if calculated.ITL.Available != test.available {
+				t.Fatalf("ITL = %+v", calculated.ITL)
+			}
+			if test.available {
+				if calculated.ITL.Count != 3 || len(calculated.ITL.ValuesMS) != 3 || calculated.ITL.Source != benchmark.TokenTimingSourceVLLM {
+					t.Fatalf("ITL = %+v", calculated.ITL)
+				}
+			} else if !strings.Contains(calculated.ITL.Reason, test.reason) {
+				t.Fatalf("ITL = %+v, want reason containing %q", calculated.ITL, test.reason)
+			}
+			if !calculated.InterChunkLatency.Available || calculated.InterChunkLatency.Count != 3 {
+				t.Fatalf("ICL changed: %+v", calculated.InterChunkLatency)
+			}
+			encoded, err := json.Marshal(result.Observation)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			for _, sentinel := range []string{"987654300", "987654301", "987654321", "987654322"} {
+				if strings.Contains(string(encoded), sentinel) {
+					t.Fatalf("observation retained sentinel %s: %s", sentinel, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestFakeTokenFixtureHonorsDisabledClientRequest(t *testing.T) {
+	config := fakeserver.DefaultConfig()
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 0
+	config.ChunkInterval = 0
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	config.TokenEvidence = fakeserver.TokenEvidenceSingleton
+	result, calculated := executeWithMode(t, config, openai.TokenEvidenceDisabled)
+	if result.Err != nil {
+		t.Fatalf("RunRequest: %v", result.Err)
+	}
+	for _, event := range result.Observation.StreamEvents {
+		if event.TokenIDsPresent || event.GeneratedTokenCount != 0 {
+			t.Fatalf("generic request received token fixture evidence: %+v", result.Observation.StreamEvents)
+		}
+	}
+	if calculated.ITL.Available || calculated.ITL.Source != benchmark.TokenTimingSourceUnavailable {
+		t.Fatalf("ITL = %+v", calculated.ITL)
+	}
+}
+
 func TestSlentoreAgainstFailureModes(t *testing.T) {
 	tests := []struct {
 		mode          fakeserver.Mode
@@ -129,6 +202,10 @@ func TestSlentoreAgainstFailureModes(t *testing.T) {
 }
 
 func execute(t *testing.T, config fakeserver.Config) (benchmark.Result, metrics.RequestMetrics) {
+	return executeWithMode(t, config, openai.TokenEvidenceDisabled)
+}
+
+func executeWithMode(t *testing.T, config fakeserver.Config, mode openai.TokenEvidenceMode) (benchmark.Result, metrics.RequestMetrics) {
 	t.Helper()
 	handler, err := fakeserver.NewHandler(config)
 	if err != nil {
@@ -136,7 +213,7 @@ func execute(t *testing.T, config fakeserver.Config) (benchmark.Result, metrics.
 	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	client, err := openai.NewClient(server.Client(), server.URL+"/v1", "")
+	client, err := openai.NewClientWithOptions(server.Client(), server.URL+"/v1", "", openai.ClientOptions{TokenEvidenceMode: mode})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

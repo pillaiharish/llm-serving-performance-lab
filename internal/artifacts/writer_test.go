@@ -16,7 +16,7 @@ import (
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-func TestWriterCreatesAtomicRedactedSchema5Lifecycle(t *testing.T) {
+func TestWriterCreatesAtomicRedactedSchema6Lifecycle(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
 	metadata := testLifecycleMetadata(2, 2)
 	requests := []RequestArtifact{
@@ -66,7 +66,7 @@ func TestWriterCreatesAtomicRedactedSchema5Lifecycle(t *testing.T) {
 
 	var persisted RunMetadata
 	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
-	if persisted.SchemaVersion != 5 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
+	if persisted.SchemaVersion != 6 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
 		t.Fatalf("persisted metadata = %+v", persisted)
 	}
 	if _, err := NewWriter(outputDirectory).Write(metadata, requests); err == nil {
@@ -119,6 +119,63 @@ func TestWriterPersistsAndRejectsInconsistentTokenLengthMetadata(t *testing.T) {
 			test.alter(&candidate)
 			if _, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(candidate, []RequestArtifact{request}); err == nil {
 				t.Fatal("inconsistent workload unexpectedly persisted")
+			}
+		})
+	}
+}
+
+func TestWriterValidatesSchema6TokenTimingEvidence(t *testing.T) {
+	metadata := testLifecycleMetadata(0, 1)
+	metadata.TokenTiming = TokenTimingMetadata{Mode: "vllm", Source: benchmark.TokenTimingSourceVLLM}
+	request := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
+	request.Observation.TokenTiming = benchmark.TokenTimingEvidence{Requested: true, Source: benchmark.TokenTimingSourceVLLM, CompletedThroughDone: true}
+	request.Observation.Usage = benchmark.TokenUsage{OutputTokens: 4, TotalTokens: 4, Source: "server_usage", Available: true}
+	for index, offset := range []time.Duration{100 * time.Millisecond, 120 * time.Millisecond, 150 * time.Millisecond, 190 * time.Millisecond} {
+		request.Observation.StreamEvents = append(request.Observation.StreamEvents, benchmark.StreamEvent{
+			Sequence: index + 1, ReceivedAfterNS: offset.Nanoseconds(), TokenIDsPresent: true, GeneratedTokenCount: 1,
+		})
+	}
+	request.Metrics = metrics.Calculate(request.Observation)
+	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, []RequestArtifact{request})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var persisted metrics.RequestMetrics
+	readArtifactJSON(t, filepath.Join(path, "measured", "requests", "req-000001", "metrics.json"), &persisted)
+	if !persisted.ITL.Available || persisted.ITL.Count != 3 || len(persisted.ITL.ValuesMS) != 3 {
+		t.Fatalf("persisted ITL = %+v", persisted.ITL)
+	}
+
+	tests := []struct {
+		name  string
+		alter func(*RunMetadata, *RequestArtifact)
+	}{
+		{name: "disabled mode claims source", alter: func(run *RunMetadata, _ *RequestArtifact) {
+			run.TokenTiming = TokenTimingMetadata{Mode: "disabled", Source: benchmark.TokenTimingSourceVLLM}
+		}},
+		{name: "invalid vllm source", alter: func(run *RunMetadata, _ *RequestArtifact) { run.TokenTiming.Source = "server_decode_time" }},
+		{name: "negative generated count", alter: func(_ *RunMetadata, value *RequestArtifact) {
+			value.Observation.StreamEvents[0].GeneratedTokenCount = -1
+			value.Metrics = metrics.Calculate(value.Observation)
+		}},
+		{name: "count without presence", alter: func(_ *RunMetadata, value *RequestArtifact) {
+			value.Observation.StreamEvents[0].TokenIDsPresent = false
+			value.Metrics = metrics.Calculate(value.Observation)
+		}},
+		{name: "metric differs from raw", alter: func(_ *RunMetadata, value *RequestArtifact) { value.Metrics.ITL.ValuesMS[0]++ }},
+		{name: "unavailable reason omitted", alter: func(_ *RunMetadata, value *RequestArtifact) {
+			value.Metrics.ITL = metrics.InterTokenLatency{Source: benchmark.TokenTimingSourceVLLM, ValuesMS: []float64{}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidateMetadata := metadata
+			candidateRequest := request
+			candidateRequest.Observation.StreamEvents = append([]benchmark.StreamEvent(nil), request.Observation.StreamEvents...)
+			candidateRequest.Metrics.ITL.ValuesMS = append([]float64(nil), request.Metrics.ITL.ValuesMS...)
+			test.alter(&candidateMetadata, &candidateRequest)
+			if _, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(candidateMetadata, []RequestArtifact{candidateRequest}); err == nil {
+				t.Fatal("inconsistent token timing unexpectedly persisted")
 			}
 		})
 	}
@@ -375,6 +432,7 @@ func testLifecycleMetadata(warmupRequests, measuredRequests int) RunMetadata {
 		Temperature:     0,
 		RequestTimeout:  "2m0s",
 		Workload:        WorkloadMetadata{Mode: "prompt", Output: WorkloadOutputMetadata{RequestedMaxTokens: 64}, PromptBytes: 14, PromptSHA256: strings.Repeat("a", 64)},
+		TokenTiming:     TokenTimingMetadata{Mode: "disabled"},
 		SafetyLimits:    SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768},
 		Load: LoadMetadata{Mode: benchmark.LoadModeClosedLoop, ClosedLoop: &ClosedLoopLoadMetadata{
 			RequestedConcurrency: 2, RequestedRequests: measuredRequests,
@@ -438,7 +496,7 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 		})
 		observation := benchmark.RequestObservation{
 			RunID: "20260819T100000Z-a31f00ff", RequestID: requestID, RequestStartedAt: &actual,
-			StreamEvents: []benchmark.StreamEvent{}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable},
+			StreamEvents: []benchmark.StreamEvent{}, TokenTiming: benchmark.TokenTimingEvidence{Source: benchmark.TokenTimingSourceUnavailable}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable},
 		}
 		requests = append(requests, RequestArtifact{Sequence: sequence, Phase: benchmark.RequestPhaseMeasured, Outcome: benchmark.OutcomeSucceeded, Observation: observation, Metrics: metrics.Calculate(observation)})
 	}
@@ -461,6 +519,7 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 		RunStatus: RunStatusFailed, Error: benchmark.ErrLoadDelivery.Error(), ErrorClass: ErrorClassLoadDelivery,
 		Model: "test-model", BaseURL: "http://localhost:8000/v1", RequestTimeout: "2s",
 		Workload:          WorkloadMetadata{Mode: "prompt", Output: WorkloadOutputMetadata{RequestedMaxTokens: 64}, PromptBytes: 14, PromptSHA256: strings.Repeat("a", 64)},
+		TokenTiming:       TokenTimingMetadata{Mode: "disabled"},
 		SafetyLimits:      SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768},
 		Load:              LoadMetadata{Mode: benchmark.LoadModeOpenLoop, OpenLoop: &OpenLoopLoadMetadata{RequestRate: 3, Duration: "1s", MaxInFlight: 2, PlannedArrivals: 3}},
 		ClientDiagnostics: benchmark.ClientDiagnostics{NumCPU: 8, GOMAXPROCS: 8, GoVersion: "go1.25.5", GOOS: "darwin", GOARCH: "arm64"},
@@ -490,7 +549,7 @@ func testRequestArtifact(runID string, phase benchmark.RequestPhase, sequence in
 	completedAfterNS := (100 * time.Millisecond).Nanoseconds()
 	observation := benchmark.RequestObservation{
 		RunID: runID, RequestID: requestID, RequestStartedAt: &started, CompletedAt: &completed, CompletedAfterNS: &completedAfterNS,
-		StreamEvents: []benchmark.StreamEvent{}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable}, Error: requestError,
+		StreamEvents: []benchmark.StreamEvent{}, TokenTiming: benchmark.TokenTimingEvidence{Source: benchmark.TokenTimingSourceUnavailable}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable}, Error: requestError,
 	}
 	return RequestArtifact{Sequence: sequence, Phase: phase, Outcome: outcome, Observation: observation, Metrics: metrics.Calculate(observation)}
 }

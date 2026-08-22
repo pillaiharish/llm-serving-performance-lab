@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -301,6 +302,98 @@ func TestCalculateUnavailableAndEdgeMetrics(t *testing.T) {
 	}
 }
 
+func TestCalculateEvidenceBackedTrueITLAfterJSONRoundTrip(t *testing.T) {
+	observation := trueITLObservation([]time.Duration{100 * time.Millisecond, 120 * time.Millisecond, 150 * time.Millisecond, 190 * time.Millisecond}, []int{1, 1, 1, 1}, 4)
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var persisted benchmark.RequestObservation
+	if err := json.Unmarshal(encoded, &persisted); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	got := Calculate(persisted)
+	if !got.ITL.Available || got.ITL.Source != benchmark.TokenTimingSourceVLLM || got.ITL.Count != 3 || got.ITL.MeanMS != 30 || got.ITL.MinMS != 20 || got.ITL.MaxMS != 40 || !reflect.DeepEqual(got.ITL.ValuesMS, []float64{20, 30, 40}) {
+		t.Fatalf("ITL = %+v", got.ITL)
+	}
+	if !got.InterChunkLatency.Available || !reflect.DeepEqual(got.InterChunkLatency.ValuesMS, []float64{20, 30, 40}) {
+		t.Fatalf("ICL changed: %+v", got.InterChunkLatency)
+	}
+}
+
+func TestCalculateRejectsIncompleteTokenEvidenceWithoutChangingICL(t *testing.T) {
+	tests := []struct {
+		name   string
+		alter  func(*benchmark.RequestObservation)
+		reason string
+	}{
+		{name: "multi-token event", alter: func(value *benchmark.RequestObservation) {
+			value.StreamEvents[1].GeneratedTokenCount = 2
+			value.Usage.OutputTokens = 5
+		}, reason: "multiple generated token IDs"},
+		{name: "coverage mismatch", alter: func(value *benchmark.RequestObservation) { value.Usage.OutputTokens = 5 }, reason: "does not match"},
+		{name: "usage missing", alter: func(value *benchmark.RequestObservation) {
+			value.Usage = benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable}
+		}, reason: "usage not available"},
+		{name: "single output token", alter: func(value *benchmark.RequestObservation) {
+			value.StreamEvents = value.StreamEvents[:1]
+			value.Usage.OutputTokens = 1
+		}, reason: "at least two output tokens"},
+		{name: "negative offset", alter: func(value *benchmark.RequestObservation) { value.StreamEvents[0].ReceivedAfterNS = -1 }, reason: "must not be negative"},
+		{name: "decreasing offsets", alter: func(value *benchmark.RequestObservation) {
+			value.StreamEvents[1].ReceivedAfterNS = value.StreamEvents[0].ReceivedAfterNS - 1
+		}, reason: "not ordered"},
+		{name: "not completed", alter: func(value *benchmark.RequestObservation) { value.TokenTiming.CompletedThroughDone = false }, reason: "through [DONE]"},
+		{name: "invalid generated ID", alter: func(value *benchmark.RequestObservation) {
+			value.TokenTiming.InvalidReason = "negative generated token ID"
+		}, reason: "negative generated token ID"},
+		{name: "no token IDs", alter: func(value *benchmark.RequestObservation) {
+			for index := range value.StreamEvents {
+				value.StreamEvents[index].TokenIDsPresent = false
+				value.StreamEvents[index].GeneratedTokenCount = 0
+			}
+		}, reason: "was not observed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation := trueITLObservation([]time.Duration{100 * time.Millisecond, 120 * time.Millisecond, 150 * time.Millisecond, 190 * time.Millisecond}, []int{1, 1, 1, 1}, 4)
+			test.alter(&observation)
+			got := Calculate(observation)
+			if got.ITL.Available || !strings.Contains(got.ITL.Reason, test.reason) || got.ITL.Count != 0 || len(got.ITL.ValuesMS) != 0 {
+				t.Fatalf("ITL = %+v, want reason containing %q", got.ITL, test.reason)
+			}
+			if test.name != "single output token" && test.name != "negative offset" && test.name != "decreasing offsets" && !got.InterChunkLatency.Available {
+				t.Fatalf("ICL became unavailable: %+v", got.InterChunkLatency)
+			}
+			assertFiniteMetrics(t, got)
+		})
+	}
+}
+
+func TestCalculateAllowsZeroITLGap(t *testing.T) {
+	got := Calculate(trueITLObservation([]time.Duration{100 * time.Millisecond, 100 * time.Millisecond}, []int{1, 1}, 2))
+	if !got.ITL.Available || !reflect.DeepEqual(got.ITL.ValuesMS, []float64{0}) {
+		t.Fatalf("ITL = %+v", got.ITL)
+	}
+}
+
+func trueITLObservation(offsets []time.Duration, counts []int, outputTokens int) benchmark.RequestObservation {
+	start := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	events := make([]benchmark.StreamEvent, len(offsets))
+	for index, offset := range offsets {
+		events[index] = benchmark.StreamEvent{
+			Sequence: index + 1, ReceivedAt: start.Add(offset), ReceivedAfterNS: offset.Nanoseconds(),
+			HasContent: true, ContentBytes: 1, TokenIDsPresent: true, GeneratedTokenCount: counts[index],
+		}
+	}
+	return benchmark.RequestObservation{
+		RunID: "run", RequestID: "req-000001", RequestStartedAt: &start,
+		StreamEvents: events,
+		TokenTiming:  benchmark.TokenTimingEvidence{Requested: true, Source: benchmark.TokenTimingSourceVLLM, CompletedThroughDone: true},
+		Usage:        benchmark.TokenUsage{OutputTokens: outputTokens, TotalTokens: outputTokens, Source: "server_usage", Available: true},
+	}
+}
+
 func (m RequestMetrics) InterChunkScalarForTest() Scalar {
 	return Scalar{Available: m.InterChunkLatency.Available, Value: m.InterChunkLatency.MeanMS, Unit: "ms", Reason: m.InterChunkLatency.Reason}
 }
@@ -325,8 +418,10 @@ func assertFiniteMetrics(t *testing.T, got RequestMetrics) {
 		got.TimeToHeaders.Value, got.TTFB.Value, got.TTFT.Value, got.TTLT.Value, got.E2E.Value,
 		got.TPOT.Value, got.OutputTokensPerSecond.Value, got.DecodeTokensPerSecond.Value,
 		got.InterChunkLatency.MeanMS, got.InterChunkLatency.MinMS, got.InterChunkLatency.MaxMS,
+		got.ITL.MeanMS, got.ITL.MinMS, got.ITL.MaxMS,
 	}
 	values = append(values, got.InterChunkLatency.ValuesMS...)
+	values = append(values, got.ITL.ValuesMS...)
 	for _, value := range values {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			t.Fatalf("non-finite metric value: %v", value)
