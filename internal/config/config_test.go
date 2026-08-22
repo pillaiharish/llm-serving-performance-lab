@@ -10,7 +10,7 @@ import (
 
 func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved := Default()
-	if resolved.Request.MaxOutputTokens != 64 || resolved.Workload.Mode != WorkloadModePrompt || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.TokenTiming.Mode != TokenTimingDisabled || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 || resolved.Benchmark.Safety.MaxInputTokens != 131072 || resolved.Benchmark.Safety.MaxOutputTokens != 32768 {
+	if resolved.Request.MaxOutputTokens != 64 || resolved.Workload.Mode != WorkloadModePrompt || resolved.Runtime.Timeout != 120*time.Second || resolved.Runtime.DrainTimeout != 120*time.Second || resolved.Capture.OutputDir != "runs" || resolved.Benchmark.Mode != LoadModeClosedLoop || resolved.Benchmark.Concurrency != 1 || resolved.Benchmark.Requests != 1 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.TokenTiming.Mode != TokenTimingDisabled || resolved.Benchmark.SLO.TTFT != nil || resolved.Benchmark.SLO.TPOT != nil || resolved.Benchmark.SLO.E2E != nil || resolved.Benchmark.Safety.MaxConcurrency != 256 || resolved.Benchmark.Safety.MaxRequests != 10000 || resolved.Benchmark.Safety.MaxRequestRate != 10000 || resolved.Benchmark.Safety.MaxInFlight != 256 || resolved.Benchmark.Safety.MaxInputTokens != 131072 || resolved.Benchmark.Safety.MaxOutputTokens != 32768 {
 		t.Fatalf("unexpected defaults: %+v", resolved)
 	}
 
@@ -27,6 +27,40 @@ func TestDefaultAndOverridesPreserveExplicitZero(t *testing.T) {
 	resolved.ApplyOverrides(Overrides{Temperature: &temperature, APIKeyEnv: &apiKeyEnv, Concurrency: &concurrency, Requests: &requests, MaxConcurrency: &maxConcurrency, MaxRequests: &maxRequests, WarmupRequests: &warmupRequests, DrainTimeout: &drainTimeout})
 	if resolved.Request.Temperature != 0 || resolved.Endpoint.APIKeyEnv != "" || resolved.Benchmark.Concurrency != 0 || resolved.Benchmark.Requests != 0 || resolved.Benchmark.WarmupRequests != 0 || resolved.Benchmark.Safety.MaxConcurrency != 0 || resolved.Benchmark.Safety.MaxRequests != 0 || resolved.Runtime.DrainTimeout != 0 {
 		t.Fatalf("explicit zero/empty overrides not applied: %+v", resolved)
+	}
+}
+
+func TestSLOConfigurationUsesDurationSyntaxAndCLIPrecedence(t *testing.T) {
+	resolved, err := Load(writeConfig(t, `version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: hello}
+benchmark:
+  slo:
+    ttft: 800ms
+    tpot: 30ms
+    e2e: null
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if resolved.Benchmark.SLO.TTFT == nil || *resolved.Benchmark.SLO.TTFT != 800*time.Millisecond || resolved.Benchmark.SLO.TPOT == nil || *resolved.Benchmark.SLO.TPOT != 30*time.Millisecond || resolved.Benchmark.SLO.E2E != nil {
+		t.Fatalf("YAML SLO = %+v", resolved.Benchmark.SLO)
+	}
+	ttft := 900 * time.Millisecond
+	e2e := 5 * time.Second
+	resolved.ApplyOverrides(Overrides{SLOTTFT: &ttft, SLOE2E: &e2e})
+	if err := resolved.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if *resolved.Benchmark.SLO.TTFT != ttft || *resolved.Benchmark.SLO.TPOT != 30*time.Millisecond || *resolved.Benchmark.SLO.E2E != e2e {
+		t.Fatalf("overridden SLO = %+v", resolved.Benchmark.SLO)
+	}
+	if _, err := Load(writeConfig(t, `version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: hello}
+benchmark: {slo: {ttft: definitely-not-a-duration}}
+`)); err == nil || !strings.Contains(err.Error(), "benchmark.slo.ttft") {
+		t.Fatalf("malformed duration error = %v", err)
 	}
 }
 
@@ -269,6 +303,8 @@ func TestValidateRejectsUnsafeOrIncompleteConfiguration(t *testing.T) {
 		{name: "zero max requests", alter: func(value *Config) { value.Benchmark.Safety.MaxRequests = 0 }, want: "max_requests"},
 		{name: "negative warmup requests", alter: func(value *Config) { value.Benchmark.WarmupRequests = -1 }, want: "warmup_requests"},
 		{name: "invalid token timing", alter: func(value *Config) { value.Benchmark.TokenTiming.Mode = "automatic" }, want: "token_timing.mode"},
+		{name: "zero TTFT SLO", alter: func(value *Config) { threshold := time.Duration(0); value.Benchmark.SLO.TTFT = &threshold }, want: "slo.ttft"},
+		{name: "negative TPOT SLO", alter: func(value *Config) { threshold := -time.Millisecond; value.Benchmark.SLO.TPOT = &threshold }, want: "slo.tpot"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

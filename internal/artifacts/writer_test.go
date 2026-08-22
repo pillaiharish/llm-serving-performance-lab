@@ -2,21 +2,24 @@ package artifacts
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-func TestWriterCreatesAtomicRedactedSchema6Lifecycle(t *testing.T) {
+func TestWriterCreatesAtomicRedactedSchema7Lifecycle(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
 	metadata := testLifecycleMetadata(2, 2)
 	requests := []RequestArtifact{
@@ -44,6 +47,8 @@ func TestWriterCreatesAtomicRedactedSchema6Lifecycle(t *testing.T) {
 	}
 
 	combined := readArtifactText(t, filepath.Join(path, "run.json"))
+	combined += readArtifactText(t, filepath.Join(path, "summary.json"))
+	combined += readArtifactText(t, filepath.Join(path, "summary.csv"))
 	for _, request := range requests {
 		phasePath := "measured"
 		if request.Phase == benchmark.RequestPhaseWarmup {
@@ -66,11 +71,55 @@ func TestWriterCreatesAtomicRedactedSchema6Lifecycle(t *testing.T) {
 
 	var persisted RunMetadata
 	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
-	if persisted.SchemaVersion != 6 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
+	if persisted.SchemaVersion != 7 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
 		t.Fatalf("persisted metadata = %+v", persisted)
 	}
 	if _, err := NewWriter(outputDirectory).Write(metadata, requests); err == nil {
 		t.Fatal("duplicate run directory unexpectedly succeeded")
+	}
+}
+
+func TestWriterPersistsCanonicalSchema7SummaryJSONAndCSV(t *testing.T) {
+	metadata := testLifecycleMetadata(1, 2)
+	metadata.TokenTiming = TokenTimingMetadata{Mode: "vllm", Source: benchmark.TokenTimingSourceVLLM}
+	threshold := 150.0
+	metadata.SLO = aggregate.SLOConfig{TTFTMS: &threshold}
+	requests := []RequestArtifact{
+		aggregatableRequestArtifact(metadata.RunID, benchmark.RequestPhaseWarmup, 1, []time.Duration{10 * time.Second, 10010 * time.Millisecond, 10020 * time.Millisecond, 10030 * time.Millisecond}),
+		aggregatableRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, []time.Duration{100 * time.Millisecond, 120 * time.Millisecond, 150 * time.Millisecond, 190 * time.Millisecond}),
+		aggregatableRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 2, []time.Duration{200 * time.Millisecond, 220 * time.Millisecond, 250 * time.Millisecond, 290 * time.Millisecond}),
+	}
+	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, requests)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var summary aggregate.RunSummary
+	readArtifactJSON(t, filepath.Join(path, "summary.json"), &summary)
+	want, err := CalculateSummary(metadata, requests, nil)
+	if err != nil {
+		t.Fatalf("CalculateSummary: %v", err)
+	}
+	if !reflect.DeepEqual(summary, want) {
+		t.Fatalf("persisted summary differs from raw evidence\n got: %+v\nwant: %+v", summary, want)
+	}
+	if summary.Latency.TTFT.SampleCount != 2 || summary.Latency.TTFT.P95 != 200 || summary.ITL.AvailableRequests != 2 || summary.ITL.Intervals.SampleCount != 6 || !summary.Tokens.Available || summary.Tokens.SuccessfulOutputTokens != 8 || summary.SLO.GoodRequests != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	file, err := os.Open(filepath.Join(path, "summary.csv"))
+	if err != nil {
+		t.Fatalf("Open summary.csv: %v", err)
+	}
+	rows, err := csv.NewReader(file).ReadAll()
+	closeErr := file.Close()
+	if err != nil || closeErr != nil || len(rows) != 2 {
+		t.Fatalf("CSV rows=%v readErr=%v closeErr=%v", rows, err, closeErr)
+	}
+	columns := make(map[string]string, len(rows[0]))
+	for index, name := range rows[0] {
+		columns[name] = rows[1][index]
+	}
+	if columns["run_id"] != metadata.RunID || columns["ttft_p95_ms"] != "200" || columns["itl_interval_sample_count"] != "6" || columns["slo_good_requests"] != "1" || columns["goodput_requests_per_second"] == "" {
+		t.Fatalf("CSV columns = %+v", columns)
 	}
 }
 
@@ -124,7 +173,7 @@ func TestWriterPersistsAndRejectsInconsistentTokenLengthMetadata(t *testing.T) {
 	}
 }
 
-func TestWriterValidatesSchema6TokenTimingEvidence(t *testing.T) {
+func TestWriterValidatesSchema7TokenTimingEvidence(t *testing.T) {
 	metadata := testLifecycleMetadata(0, 1)
 	metadata.TokenTiming = TokenTimingMetadata{Mode: "vllm", Source: benchmark.TokenTimingSourceVLLM}
 	request := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
@@ -260,6 +309,26 @@ func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outputDirectory, metadata.RunID)); !os.IsNotExist(err) {
 		t.Fatalf("final directory exists after write failure: %v", err)
+	}
+	temporaryDirectories, err := filepath.Glob(filepath.Join(outputDirectory, "."+metadata.RunID+"-*"))
+	if err != nil || len(temporaryDirectories) != 0 {
+		t.Fatalf("temporary directories remain: %v, err = %v", temporaryDirectories, err)
+	}
+}
+
+func TestWriterCleansStagingDirectoryAfterSummaryCSVFailure(t *testing.T) {
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	metadata := testLifecycleMetadata(0, 1)
+	writer := NewWriter(outputDirectory)
+	writer.writeCSV = func(string, aggregate.RunSummary) error {
+		return errors.New("injected summary CSV write failure")
+	}
+	request := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
+	if _, err := writer.Write(metadata, []RequestArtifact{request}); err == nil || !strings.Contains(err.Error(), "injected summary CSV write failure") {
+		t.Fatalf("Write error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outputDirectory, metadata.RunID)); !os.IsNotExist(err) {
+		t.Fatalf("final directory exists after summary write failure: %v", err)
 	}
 	temporaryDirectories, err := filepath.Glob(filepath.Join(outputDirectory, "."+metadata.RunID+"-*"))
 	if err != nil || len(temporaryDirectories) != 0 {
@@ -552,6 +621,44 @@ func testRequestArtifact(runID string, phase benchmark.RequestPhase, sequence in
 		StreamEvents: []benchmark.StreamEvent{}, TokenTiming: benchmark.TokenTimingEvidence{Source: benchmark.TokenTimingSourceUnavailable}, Usage: benchmark.TokenUsage{Source: benchmark.TokenUsageSourceUnavailable}, Error: requestError,
 	}
 	return RequestArtifact{Sequence: sequence, Phase: phase, Outcome: outcome, Observation: observation, Metrics: metrics.Calculate(observation)}
+}
+
+func aggregatableRequestArtifact(runID string, phase benchmark.RequestPhase, sequence int, offsets []time.Duration) RequestArtifact {
+	requestID, _ := benchmark.RequestID(sequence)
+	if phase == benchmark.RequestPhaseWarmup {
+		requestID, _ = benchmark.WarmupRequestID(sequence)
+	}
+	started := time.Date(2026, 8, 18, 11, 0, sequence, 0, time.UTC)
+	headers := started.Add(time.Millisecond)
+	headersAfter := time.Millisecond.Nanoseconds()
+	firstByte := started.Add(2 * time.Millisecond)
+	firstByteAfter := (2 * time.Millisecond).Nanoseconds()
+	completed := started.Add(offsets[len(offsets)-1] + 10*time.Millisecond)
+	completedAfter := offsets[len(offsets)-1].Nanoseconds() + (10 * time.Millisecond).Nanoseconds()
+	first := started.Add(offsets[0])
+	firstAfter := offsets[0].Nanoseconds()
+	last := started.Add(offsets[len(offsets)-1])
+	lastAfter := offsets[len(offsets)-1].Nanoseconds()
+	events := make([]benchmark.StreamEvent, len(offsets))
+	for index, offset := range offsets {
+		events[index] = benchmark.StreamEvent{
+			Sequence: index + 1, ReceivedAt: started.Add(offset), ReceivedAfterNS: offset.Nanoseconds(), HasContent: true, ContentBytes: 1, TokenIDsPresent: true, GeneratedTokenCount: 1,
+		}
+	}
+	observation := benchmark.RequestObservation{
+		RunID: runID, RequestID: requestID, RequestStartedAt: &started,
+		HeadersReceivedAt: &headers, HeadersAfterNS: &headersAfter,
+		FirstByteAt: &firstByte, FirstByteAfterNS: &firstByteAfter,
+		FirstStreamEventAt: &first, FirstStreamEventAfterNS: &firstAfter,
+		FirstContentAt: &first, FirstContentAfterNS: &firstAfter,
+		LastContentAt: &last, LastContentAfterNS: &lastAfter,
+		CompletedAt: &completed, CompletedAfterNS: &completedAfter,
+		StreamEvents: events,
+		TokenTiming:  benchmark.TokenTimingEvidence{Requested: true, Source: benchmark.TokenTimingSourceVLLM, CompletedThroughDone: true},
+		Usage:        benchmark.TokenUsage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7, Source: "server_usage", Available: true},
+		StatusCode:   200, FinishReason: "stop",
+	}
+	return RequestArtifact{Sequence: sequence, Phase: phase, Outcome: benchmark.OutcomeSucceeded, Observation: observation, Metrics: metrics.Calculate(observation)}
 }
 
 func readArtifactJSON(t *testing.T, path string, target any) {

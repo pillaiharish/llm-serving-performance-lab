@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/fakeserver"
@@ -90,7 +91,7 @@ benchmark:
 	if metadata.Model != "cli-model" || metadata.Temperature != 0 || metadata.Workload.PromptBytes != len("private CLI prompt") {
 		t.Fatalf("unexpected run metadata: %+v", metadata)
 	}
-	if metadata.SchemaVersion != 6 || metadata.Workload.Mode != "prompt" || metadata.TokenTiming.Mode != "disabled" || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
+	if metadata.SchemaVersion != 7 || metadata.Workload.Mode != "prompt" || metadata.TokenTiming.Mode != "disabled" || metadata.Load.Mode != benchmark.LoadModeClosedLoop || metadata.Load.ClosedLoop == nil || metadata.Measurement.Requested != 1 || metadata.Measurement.Attempted != 1 || metadata.Measurement.Successful != 1 || metadata.Warmup.Requested != 0 || metadata.Warmup.Status != benchmark.PhaseStatusSkipped || metadata.Drain.Timeout != "5s" || metadata.RunStatus != artifacts.RunStatusCompleted {
 		t.Fatalf("unexpected run contract: %+v", metadata)
 	}
 	if metadata.Drain.CancelledRequestIDs == nil {
@@ -121,7 +122,15 @@ benchmark:
 	if requestMetrics.RunID != metadata.RunID || requestMetrics.RequestID != observation.RequestID {
 		t.Fatalf("metrics identity = (%q, %q), observation identity = (%q, %q)", requestMetrics.RunID, requestMetrics.RequestID, observation.RunID, observation.RequestID)
 	}
-	combined := stdout.String() + readText(t, filepath.Join(runDirectory, "run.json")) + readText(t, filepath.Join(requestDirectory, "observation.json")) + readText(t, filepath.Join(requestDirectory, "metrics.json"))
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if summary.SchemaVersion != 7 || summary.Counts.Successful != 1 || summary.Latency.TTFT.SampleCount != 1 || summary.ITL.AvailableRequests != 0 || summary.ITL.UnavailableRequests != 1 || summary.ITL.Intervals.Available || !summary.Tokens.Available || summary.Tokens.SuccessfulOutputTokens != 1 || summary.SLO.Goodput.Available || summary.SLO.Goodput.Reason != aggregate.GoodputNoSLOReason {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if csvText := readText(t, filepath.Join(runDirectory, "summary.csv")); !strings.Contains(csvText, "ttft_p95_ms") || !strings.Contains(csvText, metadata.RunID) {
+		t.Fatalf("summary.csv = %q", csvText)
+	}
+	combined := stdout.String() + readTreeText(t, runDirectory)
 	for _, forbidden := range []string{"private CLI prompt", "hello", "MISSING_FROM_TEST"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("output/artifacts contain forbidden value %q", forbidden)
@@ -174,7 +183,7 @@ func TestRunBenchVLLMTokenTimingWritesAvailableRedactedITL(t *testing.T) {
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	if metadata.SchemaVersion != 6 || metadata.TokenTiming.Mode != "vllm" || metadata.TokenTiming.Source != benchmark.TokenTimingSourceVLLM {
+	if metadata.SchemaVersion != 7 || metadata.TokenTiming.Mode != "vllm" || metadata.TokenTiming.Source != benchmark.TokenTimingSourceVLLM {
 		t.Fatalf("token timing metadata = %+v", metadata.TokenTiming)
 	}
 	requestDirectory := filepath.Join(runDirectory, "measured", "requests", "req-000001")
@@ -192,15 +201,61 @@ func TestRunBenchVLLMTokenTimingWritesAvailableRedactedITL(t *testing.T) {
 	if observedTokens != 4 || !requestMetrics.ITL.Available || requestMetrics.ITL.Count != 3 || len(requestMetrics.ITL.ValuesMS) != 3 {
 		t.Fatalf("tokens/ITL = %d/%+v", observedTokens, requestMetrics.ITL)
 	}
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if summary.ITL.AvailableRequests != 1 || summary.ITL.UnavailableRequests != 0 || summary.ITL.Intervals.SampleCount != 3 || !summary.ITL.Intervals.Available || len(summary.ITL.AvailableSources) != 1 || summary.ITL.AvailableSources[0] != benchmark.TokenTimingSourceVLLM {
+		t.Fatalf("aggregate ITL = %+v", summary.ITL)
+	}
+	wantIntervals, err := aggregate.SummarizeDistribution(requestMetrics.ITL.ValuesMS, 0, "ms", "no intervals")
+	if err != nil {
+		t.Fatalf("SummarizeDistribution: %v", err)
+	}
+	if summary.ITL.Intervals.P50 != wantIntervals.P50 || summary.ITL.Intervals.P95 != wantIntervals.P95 || summary.ITL.Intervals.P99 != wantIntervals.P99 {
+		t.Fatalf("aggregate ITL percentiles = %+v, want %+v", summary.ITL.Intervals, wantIntervals)
+	}
 	combined := stdout.String() + stderr.String() + readTreeText(t, runDirectory)
 	for _, forbidden := range []string{"987654300", "987654301", "987654321", "987654322", "private token timing prompt", "Authorization"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("summary/artifacts retain forbidden value %q", forbidden)
 		}
 	}
-	for _, required := range []string{"Token timing:        vllm", "True ITL:   available", "ITL samples: 3"} {
+	for _, required := range []string{"Token timing:                vllm", "True ITL requests:           1 / 1", "ITL p50/p95/p99:"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("summary missing %q: %q", required, stdout.String())
+		}
+	}
+}
+
+func TestRunBenchEvaluatesConfiguredSLOAndPersistsGoodput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, normalCLIFixture("slo-content"))
+	}))
+	defer server.Close()
+
+	outputDirectory := filepath.Join(t.TempDir(), "runs")
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"bench", "--base-url", server.URL + "/v1", "--model", "model", "--prompt", "slo-prompt",
+		"--slo-ttft", "10s", "--slo-e2e", "10s", "--output-dir", outputDirectory,
+	}, &stdout, &stderr, os.LookupEnv)
+	if exit != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q stdout=%q", exit, stderr.String(), stdout.String())
+	}
+
+	runDirectory := onlyRunDirectory(t, outputDirectory)
+	var metadata artifacts.RunMetadata
+	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if metadata.SLO.TTFTMS == nil || *metadata.SLO.TTFTMS != 10000 || metadata.SLO.E2EMS == nil || *metadata.SLO.E2EMS != 10000 || metadata.SLO.TPOTMS != nil {
+		t.Fatalf("persisted SLO config = %+v", metadata.SLO)
+	}
+	if !summary.SLO.Configured || summary.SLO.EvaluableRequests != 1 || summary.SLO.GoodRequests != 1 || summary.SLO.BadRequests != 0 || summary.SLO.UnevaluableRequests != 0 || !summary.SLO.Goodput.Available || summary.SLO.Goodput.Numerator != 1 || summary.SLO.Goodput.DenominatorSeconds <= 0 {
+		t.Fatalf("SLO summary = %+v", summary.SLO)
+	}
+	for _, required := range []string{"TTFT SLO:", "E2E SLO:", "SLO good/evaluable:          1 / 1", "Goodput:"} {
+		if !strings.Contains(stdout.String(), required) {
+			t.Fatalf("terminal summary lacks %q: %q", required, stdout.String())
 		}
 	}
 }
@@ -242,7 +297,7 @@ func TestRunBenchPersistsNoContentFailure(t *testing.T) {
 	if requestMetrics.RunID != observation.RunID || requestMetrics.RequestID != observation.RequestID {
 		t.Fatalf("failure artifact identities differ: observation=(%q, %q), metrics=(%q, %q)", observation.RunID, observation.RequestID, requestMetrics.RunID, requestMetrics.RequestID)
 	}
-	if !strings.Contains(stdout.String(), "Measured failed:     1") {
+	if !strings.Contains(stdout.String(), "Measured failed:             1") {
 		t.Fatalf("summary does not report measured failure: %q", stdout.String())
 	}
 }
@@ -382,6 +437,9 @@ func TestRunBenchAdmissionErrorsDoNotCreateArtifacts(t *testing.T) {
 		{name: "zero drain timeout", args: []string{"--drain-timeout", "0s"}, want: "drain_timeout"},
 		{name: "invalid drain timeout", args: []string{"--drain-timeout", "later"}, want: "--drain-timeout"},
 		{name: "invalid token timing", args: []string{"--token-timing", "automatic"}, want: "--token-timing"},
+		{name: "invalid TTFT SLO", args: []string{"--slo-ttft", "later"}, want: "--slo-ttft"},
+		{name: "zero TPOT SLO", args: []string{"--slo-tpot", "0s"}, want: "slo.tpot"},
+		{name: "negative E2E SLO", args: []string{"--slo-e2e", "-1ms"}, want: "slo.e2e"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -510,7 +568,7 @@ func TestRunBenchDrainTimeoutPersistsAffectedMeasuredRequests(t *testing.T) {
 			t.Fatalf("partial observation %s = %+v", requestID, observation)
 		}
 	}
-	if !strings.Contains(stdout.String(), "Drain timed out:     true") || !strings.Contains(stdout.String(), "Drain cancellations: 2 requests") {
+	if !strings.Contains(stdout.String(), "Drain timed out:             true") || !strings.Contains(stdout.String(), "Drain cancellations:         2 requests") {
 		t.Fatalf("drain summary = %q", stdout.String())
 	}
 	if strings.Contains(stdout.String()+readTreeText(t, runDirectory), "private drain prompt") {
@@ -645,12 +703,17 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 	runDirectory := onlyRunDirectory(t, outputDirectory)
 	var metadata artifacts.RunMetadata
 	readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-	if metadata.SchemaVersion != 6 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
+	if metadata.SchemaVersion != 7 || metadata.Load.Mode != benchmark.LoadModeOpenLoop || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != 20 || metadata.Load.OpenLoop.Duration != "250ms" || metadata.Measurement.Arrivals == nil {
 		t.Fatalf("open-loop metadata = %+v", metadata)
 	}
 	counts := *metadata.Measurement.Arrivals
 	if counts.Planned != 5 || counts.Processed != 5 || counts.Started != 5 || counts.ClientLimited != 0 || counts.SchedulerLimited != 0 || counts.MaxObservedInFlight > 16 || metadata.RunStatus != artifacts.RunStatusCompleted || metadata.StopAdmission.Reason != "measurement_duration_elapsed" {
 		t.Fatalf("arrival metadata = %+v, run status = %s", counts, metadata.RunStatus)
+	}
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if !summary.Complete || summary.Load.OpenLoop == nil || summary.Load.OpenLoop.DeliveryRatio.Value != 1 || summary.Load.OpenLoop.ActualStartRate.Value != 20 || summary.SchedulerLag.SampleCount != 5 || summary.Latency.TTFT.SampleCount != 5 || !summary.RequestRates.SuccessfulRequestThroughput.Available {
+		t.Fatalf("open-loop summary = %+v", summary)
 	}
 	arrivalText := strings.TrimSpace(readText(t, filepath.Join(runDirectory, "measured", "arrivals.jsonl")))
 	if len(strings.Split(arrivalText, "\n")) != 5 {
@@ -673,7 +736,7 @@ func TestRunBenchHealthyOpenLoopPersistsArrivalEvidence(t *testing.T) {
 			t.Fatalf("open-loop output contains forbidden value %q", forbidden)
 		}
 	}
-	for _, required := range []string{"Mode:                open_loop", "Request rate:        20/s", "Planned arrivals:    5", "Client-limited:      0"} {
+	for _, required := range []string{"Mode:                        open_loop", "Offered rate:                20 requests/s", "Planned/started arrivals:    5 / 5", "Client-limited:              0"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("summary %q lacks %q", stdout.String(), required)
 		}
@@ -771,7 +834,7 @@ func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 			runDirectory := onlyRunDirectory(t, outputDirectory)
 			var metadata artifacts.RunMetadata
 			readJSON(t, filepath.Join(runDirectory, "run.json"), &metadata)
-			if metadata.SchemaVersion != 6 || metadata.Workload.Mode != "token_length" || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != 128 || metadata.Workload.Input.ResolvedTokens != 128 || metadata.Workload.Tokenizer == nil || metadata.Workload.Tokenizer.Contract != "rendered_chat_input" || len(metadata.Workload.Tokenizer.BehavioralFingerprintSHA256) != 64 {
+			if metadata.SchemaVersion != 7 || metadata.Workload.Mode != "token_length" || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != 128 || metadata.Workload.Input.ResolvedTokens != 128 || metadata.Workload.Tokenizer == nil || metadata.Workload.Tokenizer.Contract != "rendered_chat_input" || len(metadata.Workload.Tokenizer.BehavioralFingerprintSHA256) != 64 {
 				t.Fatalf("workload metadata = %+v", metadata.Workload)
 			}
 			var firstMetrics metrics.RequestMetrics
@@ -779,13 +842,18 @@ func TestRunBenchTokenLengthWorkloadAcrossLoadModes(t *testing.T) {
 			if firstMetrics.ITL.Available != test.wantITL {
 				t.Fatalf("ITL = %+v, want available=%t", firstMetrics.ITL, test.wantITL)
 			}
+			var summary aggregate.RunSummary
+			readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+			if summary.Counts.Successful != int(test.wantRequests)-metadata.Warmup.Successful || summary.Latency.TTFT.SampleCount != summary.Counts.Successful || !summary.RequestRates.SuccessfulRequestThroughput.Available || (summary.ITL.AvailableRequests > 0) != test.wantITL {
+				t.Fatalf("run summary = %+v", summary)
+			}
 			if text := readText(t, filepath.Join(runDirectory, "run.json")); strings.Contains(text, generatedPrompt) || strings.Contains(text, "private-key") {
 				t.Fatal("run metadata persisted transient workload or secret")
 			}
-			if !strings.Contains(stdout.String(), "Input resolved:      128 tokens") || strings.Contains(stdout.String(), generatedPrompt) {
+			if !strings.Contains(stdout.String(), "Input target/resolved:       128 / 128 tokens") || strings.Contains(stdout.String(), generatedPrompt) {
 				t.Fatalf("unsafe or incomplete summary: %q", stdout.String())
 			}
-			if test.wantITL && !strings.Contains(stdout.String(), "Measured requests with true ITL: 4 / 4") {
+			if test.wantITL && !strings.Contains(stdout.String(), "True ITL requests:           4 / 4") {
 				t.Fatalf("token timing summary missing measured availability count: %q", stdout.String())
 			}
 		})
@@ -876,7 +944,12 @@ func TestRunBenchOpenLoopClientLimitedFailsWithoutQueueing(t *testing.T) {
 	if metadata.RunStatus != artifacts.RunStatusFailed || metadata.ErrorClass != artifacts.ErrorClassLoadDelivery || counts == nil || counts.Planned != 10 || counts.Started != 2 || counts.ClientLimited != 8 || counts.SchedulerLimited != 0 || counts.MaxObservedInFlight != 2 {
 		t.Fatalf("pressure metadata = %+v", metadata)
 	}
-	if !strings.Contains(stdout.String(), "Run error class:      load_delivery_error") {
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if summary.RunStatus != artifacts.RunStatusFailed || summary.ErrorClass != artifacts.ErrorClassLoadDelivery || summary.Load.OpenLoop == nil || summary.Load.OpenLoop.DeliveryRatio.Value != .2 || summary.Load.OpenLoop.ClientLimitedRatio.Value != .8 || summary.Latency.TTFT.SampleCount != 2 {
+		t.Fatalf("pressure summary = %+v", summary)
+	}
+	if !strings.Contains(stdout.String(), "Run error class:             load_delivery_error") {
 		t.Fatalf("summary = %q", stdout.String())
 	}
 }
@@ -922,6 +995,11 @@ func TestRunBenchOpenLoopCancellationPersistsUnprocessedCount(t *testing.T) {
 	counts := metadata.Measurement.Arrivals
 	if metadata.RunStatus != artifacts.RunStatusCancelled || metadata.Error != context.Canceled.Error() || counts == nil || counts.Planned != 100 || counts.Processed+counts.UnprocessedDueToCancellation != counts.Planned || counts.UnprocessedDueToCancellation == 0 {
 		t.Fatalf("cancellation metadata = %+v", metadata)
+	}
+	var summary aggregate.RunSummary
+	readJSON(t, filepath.Join(runDirectory, "summary.json"), &summary)
+	if summary.Complete || summary.Counts.RequestedOrPlanned != 100 || summary.Load.OpenLoop == nil || summary.Load.OpenLoop.UnprocessedDueToCancellation == 0 {
+		t.Fatalf("cancellation summary = %+v", summary)
 	}
 	if lines := strings.TrimSpace(readText(t, filepath.Join(runDirectory, "measured", "arrivals.jsonl"))); lines == "" {
 		t.Fatal("processed cancellation arrival was not persisted")
