@@ -59,6 +59,8 @@ benchmark:
     max_requests: 10000
     max_request_rate: 10000
     max_in_flight: 256
+    max_input_tokens: 131072
+    max_output_tokens: 32768
 ```
 
 `base_url` is the OpenAI API root. Slentore removes a trailing slash and
@@ -75,8 +77,9 @@ The built-in defaults are 64 maximum output tokens, temperature 0, a 120
 second per-request timeout, a separate 120 second drain timeout, the `runs`
 output directory, closed-loop mode, concurrency 1, zero warmup requests, one
 measured request, maximum concurrency 256, maximum requests 10,000, maximum
-request rate 10,000/s, and maximum in-flight 256. Base URL, model, and prompt
-must be supplied by YAML and/or flags.
+request rate 10,000/s, maximum in-flight 256, maximum target input tokens
+131,072, and maximum requested output tokens 32,768. Base URL and model must
+be supplied by YAML and/or flags; direct-prompt mode also requires a prompt.
 
 Requested concurrency and measured request count must be positive; warmup may
 be zero. Warmup and measured counts are each checked independently against
@@ -93,6 +96,10 @@ from them.
 Unknown YAML fields, multiple YAML documents, unsupported versions, invalid
 durations, unsafe URLs, and missing required values are rejected before
 measurement begins.
+
+Input and output token ceilings are Slentore client guardrails, not claims
+about a model's context window. Token-length mode additionally checks the
+server-reported `max_model_len` before starting a lifecycle.
 
 ## Authentication
 
@@ -159,6 +166,68 @@ the terminal or accumulated in memory. With the default zero warmup,
 `concurrency: 1`, and `requests: 1`, behavior remains compatible with the
 original single-request invocation and its detailed scalar terminal summary.
 
+## Workload modes
+
+### Direct prompt workload
+
+`prompt` is the default workload mode. The user supplies `request.prompt`, and
+Slentore sends it without configuring or contacting a tokenizer. This retains
+the earlier CLI and YAML behavior. Prompt bytes and SHA-256 are persisted, but
+prompt text is not.
+
+### Token-length workload
+
+Token-length mode builds one deterministic prompt and verifies its rendered
+chat-input shape before benchmark timing:
+
+```yaml
+workload:
+  mode: token_length
+  input_tokens: 128
+  tokenizer:
+    adapter: vllm
+    url: "http://127.0.0.1:18000/tokenize"
+
+request:
+  max_output_tokens: 32
+  temperature: 0
+```
+
+See [`configs/token-length.example.yaml`](configs/token-length.example.yaml).
+The equivalent CLI flags are `--workload-mode token-length`,
+`--input-tokens`, `--tokenizer-adapter vllm`, and `--tokenizer-url`.
+`--max-output-tokens` remains the one output-limit setting in both modes.
+Slentore never infers a workload mode from these flags, and an explicitly
+supplied raw prompt conflicts with token-length mode.
+
+The vLLM adapter sends the same single-user chat shape as the measured request
+to the configured `/tokenize` endpoint with `add_generation_prompt=true` and
+no custom chat template or template arguments. Thus `input_tokens` means the
+complete `rendered_chat_input`: user content plus roles, template markers,
+special tokens, and the generation suffix selected by that server. It does
+not mean raw content tokens. Token counts are valid only under the selected
+tokenizer adapter contract and are not portable across models or endpoints.
+
+Workload construction uses a versioned deterministic fixture, verifies the
+final count exactly, and fails preflight if the exact target cannot be
+constructed. The tokenizer is initialized once; one prepared prompt is reused
+for every warmup and measured request in closed- and open-loop modes. No
+tokenization occurs in workers or request goroutines.
+
+`requested_max_tokens` is a generation maximum, not a promise that the model
+will produce that many tokens. Server usage remains authoritative for actual
+input and output token counts. Slentore persists local resolved input and
+server usage separately, does not rewrite mismatches, and does not fail merely
+because EOS produced fewer output tokens.
+
+The vLLM adapter adds no Go dependency and requires no CGO, Rust, Python, GPU,
+Hugging Face authentication, or model download. It does require the serving
+endpoint during preflight. Identity evidence includes the model, adapter and
+contract versions, source URL, server `max_model_len`, and a behavioral hash
+of fixed safe tokenizer probes. Because `/tokenizer_info` is optional in vLLM,
+this is not a vocabulary or model-revision hash; changing the endpoint may
+change counts even when its URL and model name remain the same.
+
 ## Benchmark lifecycle and load models
 
 Each admitted invocation follows one centralized lifecycle:
@@ -167,9 +236,10 @@ Each admitted invocation follows one centralized lifecycle:
 SETUP → WARMUP → MEASUREMENT → STOP ADMISSION → DRAIN → ARTIFACTS
 ```
 
-Setup covers lifecycle initialization after configuration, secret, admission,
-run-ID, shared-client, and OpenAI-client preflight. These preflight operations
-are outside lifecycle timing; a preflight failure creates no artifacts.
+Setup covers lifecycle initialization after configuration, admission, secret,
+workload preparation, run-ID, shared-client, and OpenAI-client preflight.
+These preflight operations are outside lifecycle timing; a preflight failure
+creates no artifacts.
 
 Warmup always has an explicit phase. With `warmup_requests: 0` it is recorded
 as skipped. Otherwise, warmup uses the same request payload, endpoint,
@@ -238,6 +308,8 @@ benchmark:
     max_requests: 10000
     max_request_rate: 10000
     max_in_flight: 256
+    max_input_tokens: 131072
+    max_output_tokens: 32768
 ```
 
 The CLI spelling is `--mode open-loop`, with `--request-rate`, `--duration`,
@@ -308,6 +380,11 @@ build/slentore-fake-server \
   --completion-tokens 4
 ```
 
+Tests and local token-length smoke runs may add `--tokenizer-fixture`, which
+enables a tiny `/tokenize` contract with eight fixed rendered tokens plus one
+token per UTF-8 content byte. It is disabled by default and is not a Qwen or
+production tokenizer simulation.
+
 In another terminal, benchmark it exactly like any other OpenAI-compatible
 endpoint. This example exercises four overlapping requests while leaving the
 fixture's per-request protocol unchanged:
@@ -366,7 +443,8 @@ prompt, request body, Authorization header, or generated content.
 Real timers and OS scheduling make observed durations approximate: tests check
 ordering, lower bounds, and protocol flushing rather than nanosecond equality.
 The server is a measurement-system fixture, not an LLM performance simulator.
-It does not emulate model tokenization, GPU execution, prefill/decode kernels,
+Its optional byte-token endpoint exists only to exercise Slentore preflight;
+it does not emulate model tokenization, GPU execution, prefill/decode kernels,
 KV cache, continuous batching, or vLLM scheduling.
 
 ## Real-cloud validation
@@ -495,16 +573,19 @@ runs/
 
 - Both request roots are always created, including an empty `warmup/requests`
   directory when warmup is skipped.
-- `run.json` is artifact schema version 4. It retains explicit load mode and
-  mode-specific configuration, safe workload, build,
-  endpoint, prompt hash/length, safety, and client diagnostics. It adds ordered
+- `run.json` is artifact schema version 5. It retains explicit load mode and
+  mode-specific configuration plus one run-level workload object containing
+  safe prompt length/hash, requested output maximum, and, for token-length
+  runs, exact target/resolved input, builder, tokenizer contract, behavioral
+  fingerprint, and context evidence. It also retains build, endpoint, safety,
+  and client diagnostics; ordered
   lifecycle transitions; explicit stop-admission wall/relative evidence;
   separate phase status, timing, counts, concurrency, and mutually exclusive
   outcome totals; drain timing, timeout/cancellation state and affected IDs;
   and the overall completed, failed, or canceled status and error.
 - Open-loop `arrivals.jsonl` files retain safe scheduling/admission evidence
   and counts for started, client-limited, scheduler-limited, and cancellation-
-  unprocessed arrivals. Closed-loop schema-4 runs omit arrival files.
+  unprocessed arrivals. Closed-loop schema-5 runs omit arrival files.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
   request-relative nanosecond offsets, event evidence, server usage when
   supplied, HTTP status, finish reason, byte counts, and error state.
@@ -516,7 +597,7 @@ request sequence, validates phase-specific identities, ranges, duplicates,
 counts and outcome totals, stages the complete tree, and atomically renames it
 only after every file has been written. Metric derivation and filesystem work
 happen after drain. Warmup observations are never mixed into the measured
-cohort. Historical schema-1, schema-2, and schema-3 evidence remain unchanged.
+cohort. Historical schema-1 through schema-4 evidence remain unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
@@ -526,8 +607,10 @@ before lifecycle timing, create no run directory, and exit with status 2. Once
 the lifecycle starts, DNS/connect errors, per-request timeouts, non-2xx
 responses, malformed streams, cancellation, drain timeout, and a clean stream
 with no generated content preserve available phase-scoped observation and
-metric artifacts before exiting with status 1. Request failures do not stop
-later IDs in their phase, and warmup failures do not suppress measurement.
+metric artifacts before exiting with status 1. Tokenizer or workload-building
+failures also exit 1 before lifecycle timing and create no artifacts. Request
+failures do not stop later IDs in their phase, and warmup failures do not
+suppress measurement.
 Parent cancellation stops admission according to the lifecycle rules above.
 Artifact and coordinator failures also exit 1. Missing usage alone is not a
 request failure; usage-dependent metrics are simply unavailable. Exit status 0
@@ -553,9 +636,10 @@ go test -race ./...
 
 This version runs one optional request-count warmup and one measured closed- or
 open-loop cohort. It contains no warmup-duration control, load sweep, run-level
-percentile or throughput aggregation, tokenizer workload generator, database,
+percentile or throughput aggregation, workload sweep, database,
 GPU discovery, deployment automation, or observability integration. The
 lifecycle coordinator reuses the existing `Runner.RunRequest` primitive
 without changing how an individual request is observed or how its metrics are
-calculated. The fake server provides controlled HTTP/SSE validation; it does
-not simulate GPU, model, tokenizer, or vLLM capacity behavior.
+calculated. The fake server provides controlled HTTP/SSE validation and an
+opt-in byte-tokenizer fixture; it does not simulate GPU, model, real tokenizer,
+or vLLM capacity behavior. True streamed-token ITL remains outside scope.

@@ -13,6 +13,7 @@ type fileConfig struct {
 	Version   *int          `yaml:"version"`
 	Endpoint  fileEndpoint  `yaml:"endpoint"`
 	Request   fileRequest   `yaml:"request"`
+	Workload  *fileWorkload `yaml:"workload"`
 	Runtime   fileRuntime   `yaml:"runtime"`
 	Capture   fileCapture   `yaml:"capture"`
 	Benchmark fileBenchmark `yaml:"benchmark"`
@@ -28,6 +29,17 @@ type fileRequest struct {
 	Prompt          *string  `yaml:"prompt"`
 	MaxOutputTokens *int     `yaml:"max_output_tokens"`
 	Temperature     *float64 `yaml:"temperature"`
+}
+
+type fileWorkload struct {
+	Mode        *WorkloadMode  `yaml:"mode"`
+	InputTokens *int           `yaml:"input_tokens"`
+	Tokenizer   *fileTokenizer `yaml:"tokenizer"`
+}
+
+type fileTokenizer struct {
+	Adapter *TokenizerAdapter `yaml:"adapter"`
+	URL     *string           `yaml:"url"`
 }
 
 type fileRuntime struct {
@@ -55,10 +67,12 @@ type fileOpenLoop struct {
 }
 
 type fileSafety struct {
-	MaxConcurrency *int     `yaml:"max_concurrency"`
-	MaxRequests    *int     `yaml:"max_requests"`
-	MaxRequestRate *float64 `yaml:"max_request_rate"`
-	MaxInFlight    *int     `yaml:"max_in_flight"`
+	MaxConcurrency  *int     `yaml:"max_concurrency"`
+	MaxRequests     *int     `yaml:"max_requests"`
+	MaxRequestRate  *float64 `yaml:"max_request_rate"`
+	MaxInFlight     *int     `yaml:"max_in_flight"`
+	MaxInputTokens  *int     `yaml:"max_input_tokens"`
+	MaxOutputTokens *int     `yaml:"max_output_tokens"`
 }
 
 // Load applies a YAML file, when provided, over the built-in defaults.
@@ -108,6 +122,27 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Request.Prompt != nil {
 		resolved.Request.Prompt = *raw.Request.Prompt
+		resolved.Workload.supplied.Prompt = true
+	}
+	if raw.Workload != nil {
+		if raw.Workload.Mode != nil {
+			resolved.Workload.Mode = *raw.Workload.Mode
+			resolved.Workload.supplied.Mode = true
+		}
+		if raw.Workload.InputTokens != nil {
+			resolved.Workload.InputTokens = *raw.Workload.InputTokens
+			resolved.Workload.supplied.InputTokens = true
+		}
+		if raw.Workload.Tokenizer != nil {
+			if raw.Workload.Tokenizer.Adapter != nil {
+				resolved.Workload.Tokenizer.Adapter = *raw.Workload.Tokenizer.Adapter
+				resolved.Workload.supplied.TokenizerAdapter = true
+			}
+			if raw.Workload.Tokenizer.URL != nil {
+				resolved.Workload.Tokenizer.URL = *raw.Workload.Tokenizer.URL
+				resolved.Workload.supplied.TokenizerURL = true
+			}
+		}
 	}
 	if raw.Request.MaxOutputTokens != nil {
 		resolved.Request.MaxOutputTokens = *raw.Request.MaxOutputTokens
@@ -177,6 +212,12 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.Safety.MaxInFlight != nil {
 		resolved.Benchmark.Safety.MaxInFlight = *raw.Benchmark.Safety.MaxInFlight
+	}
+	if raw.Benchmark.Safety.MaxInputTokens != nil {
+		resolved.Benchmark.Safety.MaxInputTokens = *raw.Benchmark.Safety.MaxInputTokens
+	}
+	if raw.Benchmark.Safety.MaxOutputTokens != nil {
+		resolved.Benchmark.Safety.MaxOutputTokens = *raw.Benchmark.Safety.MaxOutputTokens
 	}
 
 	return resolved, nil

@@ -13,9 +13,10 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-func TestWriterCreatesAtomicRedactedSchema4Lifecycle(t *testing.T) {
+func TestWriterCreatesAtomicRedactedSchema5Lifecycle(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
 	metadata := testLifecycleMetadata(2, 2)
 	requests := []RequestArtifact{
@@ -65,7 +66,7 @@ func TestWriterCreatesAtomicRedactedSchema4Lifecycle(t *testing.T) {
 
 	var persisted RunMetadata
 	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
-	if persisted.SchemaVersion != 4 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
+	if persisted.SchemaVersion != 5 || persisted.Warmup.Completed != 2 || persisted.Measurement.Completed != 2 {
 		t.Fatalf("persisted metadata = %+v", persisted)
 	}
 	if _, err := NewWriter(outputDirectory).Write(metadata, requests); err == nil {
@@ -83,6 +84,59 @@ func TestWriterAlwaysCreatesEmptyWarmupRoot(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(path, "warmup", "requests"))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("warmup entries = %v, err = %v", entries, err)
+	}
+}
+
+func TestWriterPersistsAndRejectsInconsistentTokenLengthMetadata(t *testing.T) {
+	metadata := testLifecycleMetadata(0, 1)
+	metadata.Workload = tokenLengthMetadata()
+	request := testRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, benchmark.OutcomeSucceeded, "")
+	path, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(metadata, []RequestArtifact{request})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var persisted RunMetadata
+	readArtifactJSON(t, filepath.Join(path, "run.json"), &persisted)
+	if persisted.Workload.Input == nil || persisted.Workload.Input.ResolvedTokens != 128 || persisted.Workload.Tokenizer == nil || persisted.Workload.Tokenizer.Revision != nil {
+		t.Fatalf("persisted workload = %+v", persisted.Workload)
+	}
+
+	tests := []struct {
+		name  string
+		alter func(*RunMetadata)
+	}{
+		{name: "resolved mismatch", alter: func(value *RunMetadata) { value.Workload.Input.ResolvedTokens = 127 }},
+		{name: "missing tokenizer", alter: func(value *RunMetadata) { value.Workload.Tokenizer = nil }},
+		{name: "bad prompt hash", alter: func(value *RunMetadata) { value.Workload.PromptSHA256 = "not-a-hash" }},
+		{name: "bad fingerprint", alter: func(value *RunMetadata) { value.Workload.Tokenizer.BehavioralFingerprintSHA256 = "bad" }},
+		{name: "context exceeded", alter: func(value *RunMetadata) { value.Workload.Tokenizer.ModelMaxLength = 150 }},
+		{name: "safety exceeded", alter: func(value *RunMetadata) { value.SafetyLimits.MaxInputTokens = 64 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := testLifecycleMetadata(0, 1)
+			candidate.Workload = tokenLengthMetadata()
+			test.alter(&candidate)
+			if _, err := NewWriter(filepath.Join(t.TempDir(), "runs")).Write(candidate, []RequestArtifact{request}); err == nil {
+				t.Fatal("inconsistent workload unexpectedly persisted")
+			}
+		})
+	}
+}
+
+func tokenLengthMetadata() WorkloadMetadata {
+	return WorkloadMetadata{
+		Mode:         workload.ModeTokenLength,
+		Input:        &WorkloadInputMetadata{Contract: workload.ContractRenderedChatInput, TargetTokens: 128, ResolvedTokens: 128},
+		Output:       WorkloadOutputMetadata{RequestedMaxTokens: 32},
+		Builder:      &workload.BuilderIdentity{Kind: workload.BuilderKindDeterministic, Version: workload.BuilderVersion},
+		PromptBytes:  120,
+		PromptSHA256: strings.Repeat("b", 64),
+		Tokenizer: &workload.TokenizerIdentity{
+			Adapter: "vllm_chat_render", AdapterVersion: "1", Contract: workload.ContractRenderedChatInput,
+			Model: "test-model", Source: "http://localhost:8000/tokenize",
+			BehavioralFingerprintSHA256: strings.Repeat("c", 64), ModelMaxLength: 512,
+		},
 	}
 }
 
@@ -311,19 +365,17 @@ func testLifecycleMetadata(warmupRequests, measuredRequests int) RunMetadata {
 	warmupWorkers := min(2, warmupRequests)
 	measurementWorkers := min(2, measuredRequests)
 	return RunMetadata{
-		SchemaVersion:            SchemaVersion,
-		RunID:                    "20260818T100000Z-a31f00ff",
-		SlentoreVersion:          "devel",
-		CreatedAt:                started,
-		RunStatus:                RunStatusCompleted,
-		Model:                    "test-model",
-		BaseURL:                  "http://localhost:8000/v1",
-		RequestedMaxOutputTokens: 64,
-		Temperature:              0,
-		RequestTimeout:           "2m0s",
-		PromptBytes:              14,
-		PromptSHA256:             "safe-hash-only",
-		SafetyLimits:             SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256},
+		SchemaVersion:   SchemaVersion,
+		RunID:           "20260818T100000Z-a31f00ff",
+		SlentoreVersion: "devel",
+		CreatedAt:       started,
+		RunStatus:       RunStatusCompleted,
+		Model:           "test-model",
+		BaseURL:         "http://localhost:8000/v1",
+		Temperature:     0,
+		RequestTimeout:  "2m0s",
+		Workload:        WorkloadMetadata{Mode: "prompt", Output: WorkloadOutputMetadata{RequestedMaxTokens: 64}, PromptBytes: 14, PromptSHA256: strings.Repeat("a", 64)},
+		SafetyLimits:    SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768},
 		Load: LoadMetadata{Mode: benchmark.LoadModeClosedLoop, ClosedLoop: &ClosedLoopLoadMetadata{
 			RequestedConcurrency: 2, RequestedRequests: measuredRequests,
 		}},
@@ -407,8 +459,9 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 	metadata := RunMetadata{
 		SchemaVersion: SchemaVersion, RunID: "20260819T100000Z-a31f00ff", SlentoreVersion: "devel", CreatedAt: started,
 		RunStatus: RunStatusFailed, Error: benchmark.ErrLoadDelivery.Error(), ErrorClass: ErrorClassLoadDelivery,
-		Model: "test-model", BaseURL: "http://localhost:8000/v1", RequestedMaxOutputTokens: 64, RequestTimeout: "2s", PromptBytes: 14, PromptSHA256: "safe-hash-only",
-		SafetyLimits:      SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256},
+		Model: "test-model", BaseURL: "http://localhost:8000/v1", RequestTimeout: "2s",
+		Workload:          WorkloadMetadata{Mode: "prompt", Output: WorkloadOutputMetadata{RequestedMaxTokens: 64}, PromptBytes: 14, PromptSHA256: strings.Repeat("a", 64)},
+		SafetyLimits:      SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768},
 		Load:              LoadMetadata{Mode: benchmark.LoadModeOpenLoop, OpenLoop: &OpenLoopLoadMetadata{RequestRate: 3, Duration: "1s", MaxInFlight: 2, PlannedArrivals: 3}},
 		ClientDiagnostics: benchmark.ClientDiagnostics{NumCPU: 8, GOMAXPROCS: 8, GoVersion: "go1.25.5", GOOS: "darwin", GOARCH: "arm64"},
 		Lifecycle: LifecycleMetadata{StartedAt: started, CompletedAt: completedAt, ElapsedNS: completedAt.Sub(started).Nanoseconds(), Transitions: []benchmark.PhaseTransition{

@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -19,6 +18,7 @@ import (
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/config"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/openai"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
 var version = "devel"
@@ -80,6 +80,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	var maxInFlight int
 	var maxRequestRateCeiling float64
 	var maxInFlightCeiling int
+	var workloadModeText string
+	var inputTokens int
+	var tokenizerAdapterText string
+	var tokenizerURL string
+	var maxInputTokensCeiling int
+	var maxOutputTokensCeiling int
 
 	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
 	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
@@ -102,6 +108,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.IntVar(&maxInFlight, "max-in-flight", 0, "open-loop admitted request bound")
 	flags.Float64Var(&maxRequestRateCeiling, "max-request-rate-ceiling", 0, "open-loop request-rate safety ceiling")
 	flags.IntVar(&maxInFlightCeiling, "max-in-flight-ceiling", 0, "open-loop in-flight safety ceiling")
+	flags.StringVar(&workloadModeText, "workload-mode", "", "workload mode: prompt or token-length")
+	flags.IntVar(&inputTokens, "input-tokens", 0, "target rendered chat input tokens")
+	flags.StringVar(&tokenizerAdapterText, "tokenizer-adapter", "", "tokenizer adapter: vllm")
+	flags.StringVar(&tokenizerURL, "tokenizer-url", "", "exact vLLM /tokenize endpoint")
+	flags.IntVar(&maxInputTokensCeiling, "max-input-tokens-ceiling", 0, "client safety ceiling for target input tokens")
+	flags.IntVar(&maxOutputTokensCeiling, "max-output-tokens-ceiling", 0, "client safety ceiling for requested output tokens")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -131,6 +143,28 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	if visited["prompt"] {
 		overrides.Prompt = &prompt
+	}
+	if visited["workload-mode"] {
+		mode, parseErr := parseCLIWorkloadMode(workloadModeText)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "error: --workload-mode: %v\n", parseErr)
+			return 2
+		}
+		overrides.WorkloadMode = &mode
+	}
+	if visited["input-tokens"] {
+		overrides.InputTokens = &inputTokens
+	}
+	if visited["tokenizer-adapter"] {
+		adapter, parseErr := parseCLITokenizerAdapter(tokenizerAdapterText)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "error: --tokenizer-adapter: %v\n", parseErr)
+			return 2
+		}
+		overrides.TokenizerAdapter = &adapter
+	}
+	if visited["tokenizer-url"] {
+		overrides.TokenizerURL = &tokenizerURL
 	}
 	if visited["max-output-tokens"] {
 		overrides.MaxOutputTokens = &maxOutputTokens
@@ -203,6 +237,12 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	if visited["max-in-flight-ceiling"] {
 		overrides.MaxInFlightCeiling = &maxInFlightCeiling
 	}
+	if visited["max-input-tokens-ceiling"] {
+		overrides.MaxInputTokens = &maxInputTokensCeiling
+	}
+	if visited["max-output-tokens-ceiling"] {
+		overrides.MaxOutputTokensCeiling = &maxOutputTokensCeiling
+	}
 	resolved.ApplyOverrides(overrides)
 	if err := resolved.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
@@ -232,17 +272,22 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
-	runID, err := benchmark.NewRunID()
-	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 2
-	}
 	httpClient, transport, err := newSharedHTTPClient(admission.TransportWorkerLimit)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: create shared HTTP client: %v\n", err)
 		return 2
 	}
 	defer transport.CloseIdleConnections()
+	prepared, err := prepareWorkload(ctx, resolved, httpClient, apiKey)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: prepare workload: %v\n", err)
+		return 1
+	}
+	runID, err := benchmark.NewRunID()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
 
 	client, err := openai.NewClient(httpClient, resolved.Endpoint.BaseURL, apiKey)
 	if err != nil {
@@ -253,8 +298,8 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	requestTemplate := benchmark.Request{
 		RunID:           runID,
 		Model:           resolved.Endpoint.Model,
-		Prompt:          resolved.Request.Prompt,
-		MaxOutputTokens: resolved.Request.MaxOutputTokens,
+		Prompt:          prepared.Prompt,
+		MaxOutputTokens: prepared.RequestedOutputTokens,
 		Temperature:     resolved.Request.Temperature,
 	}
 
@@ -308,27 +353,26 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		runStatus = artifacts.RunStatusFailed
 		runError = "lifecycle did not attempt every requested warmup and measured request"
 	}
-	promptHash := sha256.Sum256([]byte(resolved.Request.Prompt))
 	metadata := artifacts.RunMetadata{
-		SchemaVersion:            artifacts.SchemaVersion,
-		RunID:                    runID,
-		SlentoreVersion:          slentoreVersion(),
-		CreatedAt:                createdAt,
-		RunStatus:                runStatus,
-		Error:                    runError,
-		ErrorClass:               runErrorClass,
-		Model:                    resolved.Endpoint.Model,
-		BaseURL:                  resolved.Endpoint.BaseURL,
-		RequestedMaxOutputTokens: resolved.Request.MaxOutputTokens,
-		Temperature:              resolved.Request.Temperature,
-		RequestTimeout:           resolved.Runtime.Timeout.String(),
-		PromptBytes:              len([]byte(resolved.Request.Prompt)),
-		PromptSHA256:             hex.EncodeToString(promptHash[:]),
+		SchemaVersion:   artifacts.SchemaVersion,
+		RunID:           runID,
+		SlentoreVersion: slentoreVersion(),
+		CreatedAt:       createdAt,
+		RunStatus:       runStatus,
+		Error:           runError,
+		ErrorClass:      runErrorClass,
+		Model:           resolved.Endpoint.Model,
+		BaseURL:         resolved.Endpoint.BaseURL,
+		Temperature:     resolved.Request.Temperature,
+		RequestTimeout:  resolved.Runtime.Timeout.String(),
+		Workload:        workloadMetadata(prepared),
 		SafetyLimits: artifacts.SafetyLimits{
-			MaxConcurrency: resolved.Benchmark.Safety.MaxConcurrency,
-			MaxRequests:    resolved.Benchmark.Safety.MaxRequests,
-			MaxRequestRate: resolved.Benchmark.Safety.MaxRequestRate,
-			MaxInFlight:    resolved.Benchmark.Safety.MaxInFlight,
+			MaxConcurrency:  resolved.Benchmark.Safety.MaxConcurrency,
+			MaxRequests:     resolved.Benchmark.Safety.MaxRequests,
+			MaxRequestRate:  resolved.Benchmark.Safety.MaxRequestRate,
+			MaxInFlight:     resolved.Benchmark.Safety.MaxInFlight,
+			MaxInputTokens:  resolved.Benchmark.Safety.MaxInputTokens,
+			MaxOutputTokens: resolved.Benchmark.Safety.MaxOutputTokens,
 		},
 		Load:              loadMetadata(resolved, admission.PlannedArrivals),
 		ClientDiagnostics: admission.Diagnostics,
@@ -354,7 +398,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, lifecycleArrivals(lifecycleResult))
-	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
+	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Workload, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
 	if artifactErr != nil {
 		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
 		return 1
@@ -473,6 +517,45 @@ func loadMetadata(resolved config.Config, plannedArrivals int) artifacts.LoadMet
 	}
 }
 
+func prepareWorkload(ctx context.Context, resolved config.Config, httpClient *http.Client, apiKey string) (workload.PreparedWorkload, error) {
+	if resolved.Workload.Mode == config.WorkloadModePrompt {
+		return workload.PreparePrompt(resolved.Request.Prompt, resolved.Request.MaxOutputTokens), nil
+	}
+	prepareContext, cancel := context.WithTimeout(ctx, resolved.Runtime.Timeout)
+	defer cancel()
+	tokenizer, err := workload.NewVLLMTokenizer(httpClient, resolved.Workload.Tokenizer.URL, apiKey, resolved.Endpoint.Model)
+	if err != nil {
+		return workload.PreparedWorkload{}, err
+	}
+	if err := tokenizer.Initialize(prepareContext); err != nil {
+		return workload.PreparedWorkload{}, err
+	}
+	return workload.NewDeterministicBuilder(tokenizer).Build(prepareContext, workload.WorkloadSpec{
+		TargetInputTokens:     resolved.Workload.InputTokens,
+		RequestedOutputTokens: resolved.Request.MaxOutputTokens,
+		MaxInputTokens:        resolved.Benchmark.Safety.MaxInputTokens,
+	})
+}
+
+func workloadMetadata(prepared workload.PreparedWorkload) artifacts.WorkloadMetadata {
+	metadata := artifacts.WorkloadMetadata{
+		Mode:         prepared.Mode,
+		Output:       artifacts.WorkloadOutputMetadata{RequestedMaxTokens: prepared.RequestedOutputTokens},
+		Builder:      prepared.Builder,
+		PromptBytes:  prepared.PromptBytes,
+		PromptSHA256: prepared.PromptSHA256,
+		Tokenizer:    prepared.Tokenizer,
+	}
+	if prepared.Mode == workload.ModeTokenLength {
+		metadata.Input = &artifacts.WorkloadInputMetadata{
+			Contract:       prepared.InputContract,
+			TargetTokens:   prepared.TargetInputTokens,
+			ResolvedTokens: prepared.ResolvedInputTokens,
+		}
+	}
+	return metadata
+}
+
 func parseCLILoadMode(value string) (config.LoadMode, error) {
 	switch value {
 	case "closed-loop":
@@ -484,8 +567,36 @@ func parseCLILoadMode(value string) (config.LoadMode, error) {
 	}
 }
 
-func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
+func parseCLIWorkloadMode(value string) (config.WorkloadMode, error) {
+	switch value {
+	case "prompt":
+		return config.WorkloadModePrompt, nil
+	case "token-length":
+		return config.WorkloadModeTokenLength, nil
+	default:
+		return "", fmt.Errorf("must be prompt or token-length")
+	}
+}
+
+func parseCLITokenizerAdapter(value string) (config.TokenizerAdapter, error) {
+	if value != "vllm" {
+		return "", fmt.Errorf("must be vllm")
+	}
+	return config.TokenizerAdapterVLLM, nil
+}
+
+func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, prepared artifacts.WorkloadMetadata, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
 	fmt.Fprintf(writer, "Run:                 %s\n", runID)
+	fmt.Fprintf(writer, "Workload mode:       %s\n", prepared.Mode)
+	if prepared.Input != nil && prepared.Tokenizer != nil {
+		fmt.Fprintf(writer, "Input target:        %d tokens\n", prepared.Input.TargetTokens)
+		fmt.Fprintf(writer, "Input resolved:      %d tokens\n", prepared.Input.ResolvedTokens)
+		fmt.Fprintf(writer, "Input contract:      %s\n", prepared.Input.Contract)
+		fmt.Fprintf(writer, "Tokenizer:           %s/%s\n", prepared.Tokenizer.Adapter, prepared.Tokenizer.Model)
+	}
+	fmt.Fprintf(writer, "Output max requested: %d tokens\n", prepared.Output.RequestedMaxTokens)
+	fmt.Fprintf(writer, "Prompt bytes:        %d\n", prepared.PromptBytes)
+	fmt.Fprintf(writer, "Prompt SHA256:       %s\n", prepared.PromptSHA256)
 	fmt.Fprintf(writer, "Mode:                %s\n", lifecycle.LoadMode)
 	if lifecycle.LoadMode == benchmark.LoadModeOpenLoop {
 		counts := lifecycle.Measurement.ArrivalCounts

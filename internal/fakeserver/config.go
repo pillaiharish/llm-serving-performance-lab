@@ -20,30 +20,33 @@ const (
 )
 
 type Config struct {
-	Listen            string
-	Mode              Mode
-	HeaderDelay       time.Duration
-	FirstContentDelay time.Duration
-	ChunkInterval     time.Duration
-	ContentChunks     int
-	UsageDelay        time.Duration
-	DoneDelay         time.Duration
-	PromptTokens      int
-	CompletionTokens  int
+	Listen                  string
+	Mode                    Mode
+	HeaderDelay             time.Duration
+	FirstContentDelay       time.Duration
+	ChunkInterval           time.Duration
+	ContentChunks           int
+	UsageDelay              time.Duration
+	DoneDelay               time.Duration
+	PromptTokens            int
+	CompletionTokens        int
+	TokenizerFixture        bool
+	TokenizerMaxModelLength int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Listen:            "127.0.0.1:18080",
-		Mode:              ModeNormal,
-		HeaderDelay:       50 * time.Millisecond,
-		FirstContentDelay: 100 * time.Millisecond,
-		ChunkInterval:     20 * time.Millisecond,
-		ContentChunks:     4,
-		UsageDelay:        10 * time.Millisecond,
-		DoneDelay:         10 * time.Millisecond,
-		PromptTokens:      16,
-		CompletionTokens:  4,
+		Listen:                  "127.0.0.1:18080",
+		Mode:                    ModeNormal,
+		HeaderDelay:             50 * time.Millisecond,
+		FirstContentDelay:       100 * time.Millisecond,
+		ChunkInterval:           20 * time.Millisecond,
+		ContentChunks:           4,
+		UsageDelay:              10 * time.Millisecond,
+		DoneDelay:               10 * time.Millisecond,
+		PromptTokens:            16,
+		CompletionTokens:        4,
+		TokenizerMaxModelLength: 4096,
 	}
 }
 
@@ -77,6 +80,9 @@ func (c Config) Validate() error {
 	}
 	if c.CompletionTokens < 0 {
 		return fmt.Errorf("completion tokens must not be negative")
+	}
+	if c.TokenizerMaxModelLength <= 0 {
+		return fmt.Errorf("tokenizer max model length must be greater than zero")
 	}
 	maximumInt := int(^uint(0) >> 1)
 	if c.PromptTokens > maximumInt-c.CompletionTokens {

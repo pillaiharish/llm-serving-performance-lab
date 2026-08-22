@@ -38,3 +38,22 @@ type apiError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
 }
+
+type tokenizeRequest struct {
+	Model               string            `json:"model"`
+	Messages            []tokenizeMessage `json:"messages"`
+	AddGenerationPrompt bool              `json:"add_generation_prompt"`
+	AddSpecialTokens    bool              `json:"add_special_tokens"`
+	ReturnTokenStrings  bool              `json:"return_token_strs"`
+}
+
+type tokenizeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type tokenizeResponse struct {
+	Count          int   `json:"count"`
+	MaxModelLength int   `json:"max_model_len"`
+	Tokens         []int `json:"tokens"`
+}
