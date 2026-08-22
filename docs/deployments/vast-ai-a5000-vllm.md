@@ -151,6 +151,39 @@ curl -N -sS \
 Treat the generated output as transient smoke-test output. Do not copy it into
 the repository or terminal logs intended for publication.
 
+## Request evidence-backed token timing
+
+The documented vLLM 0.26.0 Chat Completions protocol accepts the
+`return_token_ids` request extension. In a streaming response, top-level
+`prompt_token_ids` belongs to the prompt, while each choice may contain a
+`token_ids` list for the generated delta. Slentore requests that extension with:
+
+```bash
+go run ./cmd/slentore bench \
+  --config configs/vast-a5000-qwen35.example.yaml \
+  --token-timing vllm
+```
+
+This remains the normal HTTP/SSE `/v1/chat/completions` endpoint; no gRPC or
+special streaming endpoint is required. Slentore does not require logprobs and
+does not send a `stream_interval` field.
+
+Token timing is validated per request rather than assumed from the server
+version. Slentore requires clean completion through `[DONE]`, matching server
+usage coverage, at least two output tokens, and exactly one generated token ID
+on every token-bearing event. If speculative decoding, batching, a parser, or
+another server behavior returns multiple generated IDs in one event, the
+client can observe only the shared event receipt time. True ITL is therefore
+unavailable for that request; Slentore does not divide the gap by token count.
+ICL, TTFT, TPOT, and other normally supported request metrics remain separate
+and usable where their own evidence is valid.
+
+The resulting ITL is client-observed token-arrival latency across the complete
+network path to Slentore. It is not an internal GPU decode-kernel or
+server-scheduler duration. Artifacts retain only token-ID field presence,
+generated-token cardinality, relative receive offsets, source, and validity;
+prompt and generated numeric token IDs are discarded.
+
 ## Connect through an SSH local forward
 
 The reliable remote-client path was an SSH tunnel with placeholders for every
