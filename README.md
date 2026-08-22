@@ -8,8 +8,9 @@ Completions request primitive with conservative generic inter-chunk timing and
 opt-in, evidence-backed vLLM token-arrival timing. It provides two explicit load
 models: fixed-concurrency closed-loop work and wall-clock open-loop request-rate
 scheduling. One invocation runs an optional request-count warmup followed by one measured
-cohort. Duration-based warmup, concurrency sweeps, percentile aggregation,
-deployment, and observability remain outside this version.
+cohort and writes exact run-level latency, throughput, delivery, token, and
+optional SLO/goodput summaries. Duration-based warmup, load sweeps, deployment,
+and observability remain outside this version.
 
 The original local single-GPU learning series remains unchanged under
 [`experiments/local-single-gpu-v0/`](experiments/local-single-gpu-v0/).
@@ -57,6 +58,10 @@ benchmark:
   warmup_requests: 0
   token_timing:
     mode: disabled
+  slo:
+    ttft: null
+    tpot: null
+    e2e: null
   safety:
     max_concurrency: 256
     max_requests: 10000
@@ -83,7 +88,7 @@ measured request, maximum concurrency 256, maximum requests 10,000, maximum
 request rate 10,000/s, maximum in-flight 256, disabled token timing, maximum
 target input tokens 131,072, and maximum requested output tokens 32,768. Base
 URL and model must be supplied by YAML and/or flags; direct-prompt mode also
-requires a prompt.
+requires a prompt. No SLO is configured by default.
 
 Requested concurrency and measured request count must be positive; warmup may
 be zero. Warmup and measured counts are each checked independently against
@@ -99,7 +104,8 @@ from them.
 
 Unknown YAML fields, multiple YAML documents, unsupported versions, invalid
 durations, unsafe URLs, and missing required values are rejected before
-measurement begins.
+measurement begins. Explicit SLO thresholds use Go duration syntax and must be
+greater than zero.
 
 Input and output token ceilings are Slentore client guardrails, not claims
 about a model's context window. Token-length mode additionally checks the
@@ -149,6 +155,9 @@ build/slentore bench \
   --concurrency 4 \
   --warmup-requests 4 \
   --requests 16 \
+  --slo-ttft 800ms \
+  --slo-tpot 30ms \
+  --slo-e2e 5s \
   --max-concurrency 256 \
   --max-requests 10000
 ```
@@ -393,11 +402,12 @@ rate multiplied by average request duration. This is an analytical
 relationship, not a safety guarantee; choose
 and explicitly admit a suitable `max_in_flight` ceiling.
 
-The terminal summary reports separate warmup and measurement requested,
-attempted, successful, and failed counts; requested concurrency; both phase
-worker and maximum-active counts; drain state; lifecycle and measurement
-elapsed time; and the artifact path. Detailed scalar output is retained only
-for one successfully collected measured request.
+The terminal summary keeps run status and load delivery visible alongside
+measured success/failure counts, p50/p95/p99 TTFT, TPOT, E2E and true ITL,
+request and output-token throughput, and optional SLO goodput. Open-loop runs
+also show offered/start rates, delivery and limiting counts, and scheduler lag.
+Detailed scalar output is retained only for one successfully collected
+measured request.
 
 ## Deterministic local fake server
 
@@ -618,6 +628,103 @@ distribution over visible content-bearing events.
 deltas. `response_body_bytes` is the number of HTTP body bytes read, including
 SSE framing, usage events, and `[DONE]`.
 
+## Run aggregation methodology
+
+Aggregation is deterministic post-processing performed after warmup,
+measurement, stop-admission, and drain. It consumes per-request metrics and
+lifecycle/arrival evidence without changing them. The summary uses only
+`measured` request and arrival records: warmup latency, outcomes, usage, ICL,
+ITL, and scheduler lag never enter a measured aggregate.
+
+Request counts distinguish requested or planned work, started/completed HTTP
+requests, successful requests, and each terminal failure outcome (`request_error`,
+`request_timeout`, `parent_cancelled`, and `drain_timeout`). Request latency and
+per-request token-rate distributions use successful measured requests, with an
+independent availability cohort for each metric. Thus a run can have different
+TTFT, TPOT, and ITL sample counts; an unavailable value is never inserted as
+zero. Failed requests remain in the outcome counts even when partial timings on
+those requests are excluded from successful-request latency distributions.
+
+All distribution percentiles are exact nearest-rank values. Given sorted
+samples `x[0] ... x[n-1]`, percentile `p` uses
+`x[max(ceil(p*n)-1, 0)]`, with no interpolation. For example,
+`[10,20,30,40]` has p50 `20` and p90/p95/p99 `40`; a one-sample distribution
+returns that sample for every percentile. An empty distribution is explicitly
+unavailable with sample count zero and a reason. Slentore calculates p50, p90,
+p95, and p99 plus mean, minimum, and maximum from temporary exact numeric
+samples; it does not persist the sorted vectors or use an approximate
+histogram.
+
+ICL and true ITL each expose two deliberately different views:
+
+- The request-mean distribution takes one mean from every successful measured
+  request where that interval metric is available, so requests have equal
+  weight.
+- The pooled-interval distribution combines all proven gaps, so individual
+  intervals have equal weight. Contributing-request and interval counts make
+  the weighting explicit.
+
+True ITL is available only from the
+`vllm_return_token_ids_client_receive` source established by the per-request
+evidence. Generic unavailable ITL is not approximated from ICL or TPOT, and an
+aggregate containing an incompatible available source is rejected.
+
+The measured completion window is `measurement.elapsed_ns / 1e9`, spanning
+measurement start through completion/drain of admitted measured requests. It
+is the denominator for:
+
+```text
+completed_request_throughput  = completed started requests / completion window
+successful_request_throughput = successful requests        / completion window
+input_token_throughput        = successful input tokens    / completion window
+output_token_throughput       = successful output tokens   / completion window
+total_token_throughput        = successful total tokens    / completion window
+goodput                       = SLO-good requests           / completion window
+```
+
+Token totals and throughput are available only when valid server usage covers
+every successful measured request. Partial coverage reports its covered and
+successful request counts plus an unavailable reason; it never reports a
+throughput from the covered subset.
+
+Open-loop admission metrics instead use the configured admission duration, so
+drain time cannot reduce the offered or start rates:
+
+```text
+planned_arrival_rate = planned arrivals / admission duration
+actual_start_rate    = started arrivals / admission duration
+delivery_ratio       = started / planned
+client_limited_ratio = client_limited / planned
+scheduler_limited_ratio = scheduler_limited / planned
+cancellation_unprocessed_ratio = unprocessed_due_to_cancellation / planned
+```
+
+The separately persisted configured request rate is not overwritten by
+`planned / duration`, which can differ at a fractional schedule boundary.
+Scheduler-lag percentiles use every measured arrival that actually started and
+has lag evidence, even when its request later failed; dropped or unprocessed
+arrivals do not enter that distribution. Request success and failure rates use
+started requests as their denominator, retain numerator and denominator, and
+are ratios in `[0,1]`. They are unavailable when no request started.
+
+Optional `benchmark.slo` thresholds, or `--slo-ttft`, `--slo-tpot`, and
+`--slo-e2e`, configure TTFT, TPOT, and E2E maximums. A metric passes with
+inclusive semantics (`value <= threshold`). A successful request is evaluable
+only when every configured metric is available; it is good when all pass, bad
+when at least one fails, and unevaluable when at least one is unavailable.
+Per-metric available, passing, failing, and unavailable counts are retained.
+Goodput is good requests divided by the completion window, not the pass ratio
+among evaluable requests or successful throughput. With no threshold, goodput
+is explicitly unavailable with reason `no SLO configured`.
+
+Failed, cancelled, client-limited, scheduler-limited, and drain-timeout runs
+still receive summaries from the evidence that exists. `complete: false`
+marks cancellation or an incomplete requested/planned workload; the summary
+preserves the original requested/planned count and never manufactures timings
+for work that did not start. Run status and error class remain adjacent to
+otherwise healthy latency numbers so a partial or load-delivery failure cannot
+be mistaken for a clean benchmark.
+
 ## Artifacts and failure behavior
 
 After drain, Slentore creates:
@@ -626,6 +733,8 @@ After drain, Slentore creates:
 runs/
 └── 20260816T120501Z-a31f00ff/
     ├── run.json
+    ├── summary.json
+    ├── summary.csv
     ├── warmup/
     │   ├── arrivals.jsonl       # open-loop only
     │   └── requests/
@@ -645,7 +754,8 @@ runs/
 
 - Both request roots are always created, including an empty `warmup/requests`
   directory when warmup is skipped.
-- `run.json` is artifact schema version 6. It retains explicit load mode and
+- `run.json`, `summary.json`, and request artifacts are generated under schema
+  version 7. `run.json` retains explicit load mode and
   mode-specific configuration plus one run-level workload object containing
   safe prompt length/hash, requested output maximum, and, for token-length
   runs, exact target/resolved input, builder, tokenizer contract, behavioral
@@ -658,7 +768,12 @@ runs/
   status and error.
 - Open-loop `arrivals.jsonl` files retain safe scheduling/admission evidence
   and counts for started, client-limited, scheduler-limited, and cancellation-
-  unprocessed arrivals. Closed-loop schema-6 runs omit arrival files.
+  unprocessed arrivals. Closed-loop schema-7 runs omit arrival files.
+- `summary.json` is the complete structured run summary. `summary.csv` uses a
+  deterministic column order with one header and exactly one run data row so a
+  later experiment layer can combine runs naturally. An unavailable scalar is
+  an empty CSV field, never `0`, `NaN`, or `N/A`; JSON availability flags and
+  reasons preserve the distinction.
 - `observation.json` contains `(run_id, request_id)`, wall timestamps,
   request-relative nanosecond offsets, safe content/token-cardinality event
   evidence, server usage when
@@ -668,10 +783,12 @@ runs/
 
 The writer keeps warmup and measured cohorts separate, sorts a copy of each by
 request sequence, validates phase-specific identities, ranges, duplicates,
-counts and outcome totals, stages the complete tree, and atomically renames it
-only after every file has been written. Metric derivation and filesystem work
-happen after drain. Warmup observations are never mixed into the measured
-cohort. Historical schema-1 through schema-5 evidence remain unchanged.
+counts and outcome totals, and recalculates the canonical summary from the raw
+artifacts. It stages the complete tree, including both summary files, and
+atomically renames it only after every file has been written. Metric derivation
+and filesystem work happen after drain. Warmup observations are never mixed
+into the measured cohort. Historical schema-1 through schema-6 evidence remain
+unchanged.
 
 Artifacts deliberately exclude the raw prompt, request body, generated text,
 raw SSE JSON, response body, and API credentials.
@@ -709,11 +826,10 @@ go test -race ./...
 ## Current scope
 
 This version runs one optional request-count warmup and one measured closed- or
-open-loop cohort. It contains no warmup-duration control, load sweep, run-level
-percentile or throughput aggregation, workload sweep, database,
-GPU discovery, deployment automation, or observability integration. True ITL
-is a per-request metric here; run-level percentiles and broader aggregation
-remain future work. The lifecycle coordinator reuses the existing
+open-loop cohort and summarizes that one run. It contains no warmup-duration
+control, load or workload sweep, database, client-capacity calibration, GPU
+discovery, deployment automation, or observability integration. The lifecycle
+coordinator reuses the existing
 `Runner.RunRequest` primitive
 without changing how an individual request is observed or how its metrics are
 calculated. The fake server provides controlled HTTP/SSE validation and an
