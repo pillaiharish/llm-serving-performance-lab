@@ -195,6 +195,9 @@ func populateLoadSummary(summary *RunSummary, input Input, measured []Request) e
 			requestsBySequence[request.Sequence] = request
 		}
 		seen := make(map[int]struct{}, len(measuredArrivals))
+		started := 0
+		clientLimited := 0
+		schedulerLimited := 0
 		for _, arrival := range measuredArrivals {
 			if arrival.Sequence <= 0 || arrival.Sequence > counts.Planned {
 				return fmt.Errorf("open-loop arrival sequence is outside the planned range")
@@ -206,19 +209,29 @@ func populateLoadSummary(summary *RunSummary, input Input, measured []Request) e
 			request, requestExists := requestsBySequence[arrival.Sequence]
 			switch arrival.Disposition {
 			case benchmark.ArrivalStarted:
+				started++
 				if !requestExists || arrival.RequestID == nil || *arrival.RequestID != request.Metrics.RequestID || arrival.SchedulerLagNS == nil {
 					return fmt.Errorf("started arrival %d lacks matching request or scheduler-lag evidence", arrival.Sequence)
 				}
 				if *arrival.SchedulerLagNS < 0 {
 					return fmt.Errorf("started arrival %d has negative scheduler lag", arrival.Sequence)
 				}
-			case benchmark.ArrivalClientLimited, benchmark.ArrivalSchedulerLimited:
+			case benchmark.ArrivalClientLimited:
+				clientLimited++
+				if requestExists || arrival.RequestID != nil || arrival.SchedulerLagNS != nil {
+					return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
+				}
+			case benchmark.ArrivalSchedulerLimited:
+				schedulerLimited++
 				if requestExists || arrival.RequestID != nil || arrival.SchedulerLagNS != nil {
 					return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
 				}
 			default:
 				return fmt.Errorf("arrival %d has invalid disposition %q", arrival.Sequence, arrival.Disposition)
 			}
+		}
+		if started != counts.Started || clientLimited != counts.ClientLimited || schedulerLimited != counts.SchedulerLimited {
+			return fmt.Errorf("open-loop arrival disposition records disagree with counts")
 		}
 		admissionSeconds := open.Duration.Seconds()
 		summary.Durations.AdmissionWindow = availableNumeric(admissionSeconds, "s")

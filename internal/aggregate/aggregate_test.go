@@ -351,6 +351,39 @@ func TestCalculateRejectsStructuralInconsistencyAndITLSourceMixing(t *testing.T)
 	}
 }
 
+func TestCalculateRejectsOpenLoopArrivalDispositionCountSwaps(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		metadataLimited benchmark.ArrivalDisposition
+		rawLimited      benchmark.ArrivalDisposition
+	}{
+		{name: "metadata client-limited raw scheduler-limited", metadataLimited: benchmark.ArrivalClientLimited, rawLimited: benchmark.ArrivalSchedulerLimited},
+		{name: "metadata scheduler-limited raw client-limited", metadataLimited: benchmark.ArrivalSchedulerLimited, rawLimited: benchmark.ArrivalClientLimited},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := openInput(10, time.Second, 10, 2, time.Second)
+			input.Measurement.Outcomes = benchmark.OutcomeCounts{Succeeded: 2}
+			for sequence := 1; sequence <= 2; sequence++ {
+				request := successRequest(sequence, 100, 10)
+				input.Requests = append(input.Requests, request)
+				input.Arrivals = append(input.Arrivals, startedArrival(sequence, request.Metrics.RequestID, time.Millisecond))
+			}
+			for sequence := 3; sequence <= 10; sequence++ {
+				input.Arrivals = append(input.Arrivals, droppedArrival(sequence, test.rawLimited))
+			}
+			input.Measurement.ArrivalCounts.Processed = 10
+			if test.metadataLimited == benchmark.ArrivalClientLimited {
+				input.Measurement.ArrivalCounts.ClientLimited = 8
+			} else {
+				input.Measurement.ArrivalCounts.SchedulerLimited = 8
+			}
+			if _, err := Calculate(input); err == nil || !strings.Contains(err.Error(), "arrival disposition records disagree with counts") {
+				t.Fatalf("Calculate error = %v", err)
+			}
+		})
+	}
+}
+
 func TestMarshalCSVUsesEmptyUnavailableFieldsAndDeterministicColumns(t *testing.T) {
 	input := closedInput(1, time.Second)
 	request := successRequest(1, 100, 10)

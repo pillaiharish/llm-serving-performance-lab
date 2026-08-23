@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,8 +119,24 @@ func TestWriterPersistsCanonicalSchema7SummaryJSONAndCSV(t *testing.T) {
 	for index, name := range rows[0] {
 		columns[name] = rows[1][index]
 	}
-	if columns["run_id"] != metadata.RunID || columns["ttft_p95_ms"] != "200" || columns["itl_interval_sample_count"] != "6" || columns["slo_good_requests"] != "1" || columns["goodput_requests_per_second"] == "" {
-		t.Fatalf("CSV columns = %+v", columns)
+	if columns["run_id"] != metadata.RunID {
+		t.Fatalf("CSV run_id = %q, want %q", columns["run_id"], metadata.RunID)
+	}
+	for name, want := range map[string]float64{
+		"completed_requests_per_second":  summary.RequestRates.CompletedRequestThroughput.Value,
+		"successful_requests_per_second": summary.RequestRates.SuccessfulRequestThroughput.Value,
+		"output_tokens_per_second":       summary.Tokens.Throughput.Output.Value,
+		"goodput_requests_per_second":    summary.SLO.Goodput.Value,
+		"ttft_p95_ms":                    summary.Latency.TTFT.P95,
+	} {
+		got, parseErr := strconv.ParseFloat(columns[name], 64)
+		if parseErr != nil || got != want {
+			t.Fatalf("CSV %s = %q (%v), want %g", name, columns[name], parseErr, want)
+		}
+	}
+	intervalCount, parseErr := strconv.Atoi(columns["itl_interval_sample_count"])
+	if parseErr != nil || intervalCount != summary.ITL.Intervals.SampleCount {
+		t.Fatalf("CSV itl_interval_sample_count = %q (%v), want %d", columns["itl_interval_sample_count"], parseErr, summary.ITL.Intervals.SampleCount)
 	}
 }
 
@@ -293,6 +310,34 @@ func TestWriterRejectsInvalidPhaseIdentityAndCounts(t *testing.T) {
 	}
 }
 
+func TestWriterRejectsMetricsThatDifferFromRawObservation(t *testing.T) {
+	metadata := testLifecycleMetadata(0, 1)
+	metadata.TokenTiming = TokenTimingMetadata{Mode: "vllm", Source: benchmark.TokenTimingSourceVLLM}
+	tests := []struct {
+		name  string
+		alter func(*metrics.RequestMetrics)
+	}{
+		{name: "TTFT", alter: func(value *metrics.RequestMetrics) { value.TTFT.Value++ }},
+		{name: "TPOT", alter: func(value *metrics.RequestMetrics) { value.TPOT.Value++ }},
+		{name: "E2E", alter: func(value *metrics.RequestMetrics) { value.E2E.Value++ }},
+		{name: "token usage", alter: func(value *metrics.RequestMetrics) {
+			value.TokenUsage.InputTokens++
+			value.TokenUsage.TotalTokens++
+		}},
+		{name: "ICL mean", alter: func(value *metrics.RequestMetrics) { value.InterChunkLatency.MeanMS++ }},
+		{name: "ICL value", alter: func(value *metrics.RequestMetrics) { value.InterChunkLatency.ValuesMS[0]++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := aggregatableRequestArtifact(metadata.RunID, benchmark.RequestPhaseMeasured, 1, []time.Duration{100 * time.Millisecond, 120 * time.Millisecond, 150 * time.Millisecond, 190 * time.Millisecond})
+			test.alter(&request.Metrics)
+			if _, err := NewWriter(t.TempDir()).Write(metadata, []RequestArtifact{request}); err == nil || !strings.Contains(err.Error(), "metrics do not match raw observation evidence") {
+				t.Fatalf("Write error = %v", err)
+			}
+		})
+	}
+}
+
 func TestWriterCleansStagingDirectoryAfterWriteFailure(t *testing.T) {
 	outputDirectory := filepath.Join(t.TempDir(), "runs")
 	metadata := testLifecycleMetadata(0, 1)
@@ -426,11 +471,11 @@ func TestWriterPersistsAndValidatesOpenLoopArrivalEvidence(t *testing.T) {
 				t.Fatalf("WriteWithArrivals: %v", err)
 			}
 			entries, err := os.ReadDir(filepath.Join(path, "measured", "requests"))
-			if err != nil || len(entries) != 2 || entries[0].Name() != "req-000001" || entries[1].Name() != "req-000003" {
+			if err != nil || len(entries) != 2 || entries[0].Name() != "req-000001" || entries[1].Name() != "req-000010" {
 				t.Fatalf("request gap entries = %v, err = %v", entries, err)
 			}
 			lines := strings.Split(strings.TrimSpace(readArtifactText(t, filepath.Join(path, "measured", "arrivals.jsonl"))), "\n")
-			if len(lines) != 3 {
+			if len(lines) != 10 {
 				t.Fatalf("arrival lines = %d: %v", len(lines), lines)
 			}
 			var dropped benchmark.ArrivalRecord
@@ -442,6 +487,27 @@ func TestWriterPersistsAndValidatesOpenLoopArrivalEvidence(t *testing.T) {
 			}
 			if warmup := readArtifactText(t, filepath.Join(path, "warmup", "arrivals.jsonl")); warmup != "" {
 				t.Fatalf("skipped warmup arrivals = %q", warmup)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name            string
+		metadataLimited benchmark.ArrivalDisposition
+		rawLimited      benchmark.ArrivalDisposition
+	}{
+		{name: "metadata client-limited raw scheduler-limited", metadataLimited: benchmark.ArrivalClientLimited, rawLimited: benchmark.ArrivalSchedulerLimited},
+		{name: "metadata scheduler-limited raw client-limited", metadataLimited: benchmark.ArrivalSchedulerLimited, rawLimited: benchmark.ArrivalClientLimited},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			metadata, requests, arrivals := testOpenLoopArtifacts(test.metadataLimited)
+			for index := range arrivals {
+				if arrivals[index].Disposition != benchmark.ArrivalStarted {
+					arrivals[index].Disposition = test.rawLimited
+				}
+			}
+			if _, err := NewWriter(filepath.Join(t.TempDir(), "runs")).WriteWithArrivals(metadata, requests, arrivals); err == nil || !strings.Contains(err.Error(), "arrival disposition records differ from counts") {
+				t.Fatalf("WriteWithArrivals error = %v", err)
 			}
 		})
 	}
@@ -547,12 +613,19 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 	measurementAt := started.Add(20 * time.Millisecond)
 	stopAt := measurementAt.Add(time.Second)
 	completedAt := stopAt.Add(100 * time.Millisecond)
-	offsets, _ := benchmark.ArrivalOffsets(3, 3)
-	arrivals := make([]benchmark.ArrivalRecord, 0, 3)
+	offsets, _ := benchmark.ArrivalOffsets(10, 10)
+	arrivals := make([]benchmark.ArrivalRecord, 0, 10)
 	requests := make([]RequestArtifact, 0, 2)
-	for _, sequence := range []int{1, 3} {
-		requestID, _ := benchmark.RequestID(sequence)
+	for sequence := 1; sequence <= 10; sequence++ {
 		scheduled := measurementAt.Add(offsets[sequence-1])
+		if sequence != 1 && sequence != 10 {
+			arrivals = append(arrivals, benchmark.ArrivalRecord{
+				Sequence: sequence, Phase: benchmark.RequestPhaseMeasured,
+				ScheduledAt: scheduled, ScheduledAfterNS: offsets[sequence-1].Nanoseconds(), Disposition: limited,
+			})
+			continue
+		}
+		requestID, _ := benchmark.RequestID(sequence)
 		actual := scheduled.Add(time.Millisecond)
 		actualAfter := actual.Sub(measurementAt).Nanoseconds()
 		lag := actual.Sub(scheduled).Nanoseconds()
@@ -569,20 +642,16 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 		}
 		requests = append(requests, RequestArtifact{Sequence: sequence, Phase: benchmark.RequestPhaseMeasured, Outcome: benchmark.OutcomeSucceeded, Observation: observation, Metrics: metrics.Calculate(observation)})
 	}
-	arrivals = append(arrivals, benchmark.ArrivalRecord{
-		Sequence: 2, Phase: benchmark.RequestPhaseMeasured,
-		ScheduledAt: measurementAt.Add(offsets[1]), ScheduledAfterNS: offsets[1].Nanoseconds(), Disposition: limited,
-	})
 	sort.Slice(arrivals, func(left, right int) bool { return arrivals[left].Sequence < arrivals[right].Sequence })
 	clientLimited := 0
 	schedulerLimited := 0
 	if limited == benchmark.ArrivalClientLimited {
-		clientLimited = 1
+		clientLimited = 8
 	} else {
-		schedulerLimited = 1
+		schedulerLimited = 8
 	}
 	warmupCounts := benchmark.ArrivalCounts{}
-	measurementCounts := benchmark.ArrivalCounts{Planned: 3, Processed: 3, Started: 2, ClientLimited: clientLimited, SchedulerLimited: schedulerLimited, MaxObservedInFlight: 2}
+	measurementCounts := benchmark.ArrivalCounts{Planned: 10, Processed: 10, Started: 2, ClientLimited: clientLimited, SchedulerLimited: schedulerLimited, MaxObservedInFlight: 2}
 	metadata := RunMetadata{
 		SchemaVersion: SchemaVersion, RunID: "20260819T100000Z-a31f00ff", SlentoreVersion: "devel", CreatedAt: started,
 		RunStatus: RunStatusFailed, Error: benchmark.ErrLoadDelivery.Error(), ErrorClass: ErrorClassLoadDelivery,
@@ -590,7 +659,7 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 		Workload:          WorkloadMetadata{Mode: "prompt", Output: WorkloadOutputMetadata{RequestedMaxTokens: 64}, PromptBytes: 14, PromptSHA256: strings.Repeat("a", 64)},
 		TokenTiming:       TokenTimingMetadata{Mode: "disabled"},
 		SafetyLimits:      SafetyLimits{MaxConcurrency: 256, MaxRequests: 10000, MaxRequestRate: 10000, MaxInFlight: 256, MaxInputTokens: 131072, MaxOutputTokens: 32768},
-		Load:              LoadMetadata{Mode: benchmark.LoadModeOpenLoop, OpenLoop: &OpenLoopLoadMetadata{RequestRate: 3, Duration: "1s", MaxInFlight: 2, PlannedArrivals: 3}},
+		Load:              LoadMetadata{Mode: benchmark.LoadModeOpenLoop, OpenLoop: &OpenLoopLoadMetadata{RequestRate: 10, Duration: "1s", MaxInFlight: 2, PlannedArrivals: 10}},
 		ClientDiagnostics: benchmark.ClientDiagnostics{NumCPU: 8, GOMAXPROCS: 8, GoVersion: "go1.25.5", GOOS: "darwin", GOARCH: "arm64"},
 		Lifecycle: LifecycleMetadata{StartedAt: started, CompletedAt: completedAt, ElapsedNS: completedAt.Sub(started).Nanoseconds(), Transitions: []benchmark.PhaseTransition{
 			{Sequence: 1, Phase: benchmark.PhaseSetup, EnteredAt: started, Reason: "lifecycle_started"},
@@ -602,7 +671,7 @@ func testOpenLoopArtifacts(limited benchmark.ArrivalDisposition) (RunMetadata, [
 		}},
 		StopAdmission: StopAdmissionMetadata{StoppedAt: stopAt, StoppedAfterNS: stopAt.Sub(started).Nanoseconds(), Reason: "measurement_duration_elapsed"},
 		Warmup:        PhaseMetadata{Phase: benchmark.RequestPhaseWarmup, Status: benchmark.PhaseStatusSkipped, StartedAt: &warmupAt, CompletedAt: &warmupAt, Arrivals: &warmupCounts},
-		Measurement:   PhaseMetadata{Phase: benchmark.RequestPhaseMeasured, Status: benchmark.PhaseStatusCompleted, StartedAt: &measurementAt, CompletedAt: &completedAt, ElapsedNS: completedAt.Sub(measurementAt).Nanoseconds(), Requested: 3, Attempted: 2, Completed: 2, Successful: 2, Outcomes: benchmark.OutcomeCounts{Succeeded: 2}, Arrivals: &measurementCounts},
+		Measurement:   PhaseMetadata{Phase: benchmark.RequestPhaseMeasured, Status: benchmark.PhaseStatusCompleted, StartedAt: &measurementAt, CompletedAt: &completedAt, ElapsedNS: completedAt.Sub(measurementAt).Nanoseconds(), Requested: 10, Attempted: 2, Completed: 2, Successful: 2, Outcomes: benchmark.OutcomeCounts{Succeeded: 2}, Arrivals: &measurementCounts},
 		Drain:         DrainMetadata{StartedAt: &stopAt, CompletedAt: &completedAt, ElapsedNS: completedAt.Sub(stopAt).Nanoseconds(), Timeout: "2s", CancelledRequestIDs: []string{}},
 	}
 	return metadata, requests, arrivals

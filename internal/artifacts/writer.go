@@ -332,6 +332,10 @@ func validateRequests(metadata RunMetadata, requests []RequestArtifact) (phaseAr
 		if err := validateRequestTokenTiming(metadata.TokenTiming, request); err != nil {
 			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request %s token timing: %w", observation.RequestID, err)
 		}
+		wantMetrics := metrics.Calculate(observation)
+		if !reflect.DeepEqual(request.Metrics, wantMetrics) {
+			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request %s metrics do not match raw observation evidence", observation.RequestID)
+		}
 		key := string(request.Phase) + ":" + observation.RequestID
 		if _, exists := seen[key]; exists {
 			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("duplicate request ID %s in phase %s", observation.RequestID, request.Phase)
@@ -642,6 +646,8 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 		return fmt.Errorf("derive arrival offsets: %w", err)
 	}
 	started := 0
+	clientLimited := 0
+	schedulerLimited := 0
 	for _, arrival := range phaseArrivals {
 		if arrival.Sequence <= 0 || arrival.Sequence > counts.Planned || arrival.ScheduledAfterNS < 0 || !arrival.ScheduledAt.Equal(phase.StartedAt.Add(time.Duration(arrival.ScheduledAfterNS))) {
 			return fmt.Errorf("invalid arrival identity or scheduled timing")
@@ -660,7 +666,13 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 			if arrival.RequestID == nil || arrival.ActualStartedAt == nil || arrival.ActualStartedAfterNS == nil || arrival.SchedulerLagNS == nil || *arrival.SchedulerLagNS < 0 || !requestExists || *arrival.RequestID != request.Observation.RequestID || request.Observation.RequestStartedAt == nil || !arrival.ActualStartedAt.Equal(*request.Observation.RequestStartedAt) || *arrival.ActualStartedAfterNS != arrival.ActualStartedAt.Sub(*phase.StartedAt).Nanoseconds() || *arrival.SchedulerLagNS != arrival.ActualStartedAt.Sub(arrival.ScheduledAt).Nanoseconds() {
 				return fmt.Errorf("started arrival %d has inconsistent request timing or identity", arrival.Sequence)
 			}
-		case benchmark.ArrivalClientLimited, benchmark.ArrivalSchedulerLimited:
+		case benchmark.ArrivalClientLimited:
+			clientLimited++
+			if arrival.RequestID != nil || arrival.ActualStartedAt != nil || arrival.ActualStartedAfterNS != nil || arrival.SchedulerLagNS != nil || requestExists {
+				return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
+			}
+		case benchmark.ArrivalSchedulerLimited:
+			schedulerLimited++
 			if arrival.RequestID != nil || arrival.ActualStartedAt != nil || arrival.ActualStartedAfterNS != nil || arrival.SchedulerLagNS != nil || requestExists {
 				return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
 			}
@@ -668,8 +680,8 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 			return fmt.Errorf("invalid arrival disposition %q", arrival.Disposition)
 		}
 	}
-	if started != counts.Started {
-		return fmt.Errorf("started arrival records differ from counts")
+	if started != counts.Started || clientLimited != counts.ClientLimited || schedulerLimited != counts.SchedulerLimited {
+		return fmt.Errorf("arrival disposition records differ from counts")
 	}
 	return nil
 }
