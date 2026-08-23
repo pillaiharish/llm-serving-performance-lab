@@ -97,12 +97,19 @@ type Benchmark struct {
 	WarmupRequests int
 	OpenLoop       OpenLoop
 	TokenTiming    TokenTiming
+	SLO            SLO
 	Safety         Safety
 	supplied       benchmarkFields
 }
 
 type TokenTiming struct {
 	Mode TokenTimingMode
+}
+
+type SLO struct {
+	TTFT *time.Duration
+	TPOT *time.Duration
+	E2E  *time.Duration
 }
 
 type OpenLoop struct {
@@ -160,6 +167,9 @@ type Overrides struct {
 	MaxInputTokens         *int
 	MaxOutputTokensCeiling *int
 	TokenTimingMode        *TokenTimingMode
+	SLOTTFT                *time.Duration
+	SLOTPOT                *time.Duration
+	SLOE2E                 *time.Duration
 }
 
 func Default() Config {
@@ -285,6 +295,15 @@ func (c *Config) ApplyOverrides(overrides Overrides) {
 	if overrides.TokenTimingMode != nil {
 		c.Benchmark.TokenTiming.Mode = *overrides.TokenTimingMode
 	}
+	if overrides.SLOTTFT != nil {
+		c.Benchmark.SLO.TTFT = durationPointer(*overrides.SLOTTFT)
+	}
+	if overrides.SLOTPOT != nil {
+		c.Benchmark.SLO.TPOT = durationPointer(*overrides.SLOTPOT)
+	}
+	if overrides.SLOE2E != nil {
+		c.Benchmark.SLO.E2E = durationPointer(*overrides.SLOE2E)
+	}
 }
 
 func (c Config) Validate() error {
@@ -319,6 +338,18 @@ func (c Config) Validate() error {
 	case TokenTimingDisabled, TokenTimingVLLM:
 	default:
 		return fmt.Errorf("benchmark.token_timing.mode must be disabled or vllm")
+	}
+	for _, threshold := range []struct {
+		name  string
+		value *time.Duration
+	}{
+		{name: "ttft", value: c.Benchmark.SLO.TTFT},
+		{name: "tpot", value: c.Benchmark.SLO.TPOT},
+		{name: "e2e", value: c.Benchmark.SLO.E2E},
+	} {
+		if threshold.value != nil && *threshold.value <= 0 {
+			return fmt.Errorf("benchmark.slo.%s must be greater than zero", threshold.name)
+		}
 	}
 	switch c.Workload.Mode {
 	case WorkloadModePrompt:
@@ -408,6 +439,11 @@ func (c Config) Validate() error {
 		return fmt.Errorf("benchmark.mode must be closed_loop or open_loop")
 	}
 	return nil
+}
+
+func durationPointer(value time.Duration) *time.Duration {
+	copy := value
+	return &copy
 }
 
 func validateBaseURL(rawURL string) error {

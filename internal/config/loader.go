@@ -58,11 +58,18 @@ type fileBenchmark struct {
 	WarmupRequests *int             `yaml:"warmup_requests"`
 	OpenLoop       *fileOpenLoop    `yaml:"open_loop"`
 	TokenTiming    *fileTokenTiming `yaml:"token_timing"`
+	SLO            *fileSLO         `yaml:"slo"`
 	Safety         fileSafety       `yaml:"safety"`
 }
 
 type fileTokenTiming struct {
 	Mode *TokenTimingMode `yaml:"mode"`
+}
+
+type fileSLO struct {
+	TTFT *string `yaml:"ttft"`
+	TPOT *string `yaml:"tpot"`
+	E2E  *string `yaml:"e2e"`
 }
 
 type fileOpenLoop struct {
@@ -185,6 +192,27 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.TokenTiming != nil && raw.Benchmark.TokenTiming.Mode != nil {
 		resolved.Benchmark.TokenTiming.Mode = *raw.Benchmark.TokenTiming.Mode
+	}
+	if raw.Benchmark.SLO != nil {
+		thresholds := []struct {
+			name   string
+			raw    *string
+			target **time.Duration
+		}{
+			{name: "ttft", raw: raw.Benchmark.SLO.TTFT, target: &resolved.Benchmark.SLO.TTFT},
+			{name: "tpot", raw: raw.Benchmark.SLO.TPOT, target: &resolved.Benchmark.SLO.TPOT},
+			{name: "e2e", raw: raw.Benchmark.SLO.E2E, target: &resolved.Benchmark.SLO.E2E},
+		}
+		for _, threshold := range thresholds {
+			if threshold.raw == nil {
+				continue
+			}
+			parsed, err := time.ParseDuration(*threshold.raw)
+			if err != nil {
+				return Config{}, fmt.Errorf("benchmark.slo.%s: %w", threshold.name, err)
+			}
+			*threshold.target = durationPointer(parsed)
+		}
 	}
 	if raw.Benchmark.Safety.MaxConcurrency != nil {
 		resolved.Benchmark.Safety.MaxConcurrency = *raw.Benchmark.Safety.MaxConcurrency

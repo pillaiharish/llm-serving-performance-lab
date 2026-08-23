@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/config"
@@ -87,6 +88,9 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	var maxInputTokensCeiling int
 	var maxOutputTokensCeiling int
 	var tokenTimingText string
+	var sloTTFTText string
+	var sloTPOTText string
+	var sloE2EText string
 
 	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
 	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
@@ -116,6 +120,9 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags.IntVar(&maxInputTokensCeiling, "max-input-tokens-ceiling", 0, "client safety ceiling for target input tokens")
 	flags.IntVar(&maxOutputTokensCeiling, "max-output-tokens-ceiling", 0, "client safety ceiling for requested output tokens")
 	flags.StringVar(&tokenTimingText, "token-timing", "", "token timing evidence: disabled or vllm")
+	flags.StringVar(&sloTTFTText, "slo-ttft", "", "maximum successful-request TTFT, such as 800ms")
+	flags.StringVar(&sloTPOTText, "slo-tpot", "", "maximum successful-request TPOT, such as 30ms")
+	flags.StringVar(&sloE2EText, "slo-e2e", "", "maximum successful-request E2E latency, such as 5s")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -253,6 +260,25 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		overrides.TokenTimingMode = &mode
 	}
+	for _, sloFlag := range []struct {
+		name   string
+		text   string
+		target **time.Duration
+	}{
+		{name: "slo-ttft", text: sloTTFTText, target: &overrides.SLOTTFT},
+		{name: "slo-tpot", text: sloTPOTText, target: &overrides.SLOTPOT},
+		{name: "slo-e2e", text: sloE2EText, target: &overrides.SLOE2E},
+	} {
+		if !visited[sloFlag.name] {
+			continue
+		}
+		duration, parseErr := time.ParseDuration(sloFlag.text)
+		if parseErr != nil {
+			fmt.Fprintf(stderr, "error: --%s: %v\n", sloFlag.name, parseErr)
+			return 2
+		}
+		*sloFlag.target = &duration
+	}
 	resolved.ApplyOverrides(overrides)
 	if err := resolved.Validate(); err != nil {
 		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
@@ -379,6 +405,7 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		RequestTimeout:  resolved.Runtime.Timeout.String(),
 		Workload:        workloadMetadata(prepared),
 		TokenTiming:     tokenTimingMetadata(resolved.Benchmark.TokenTiming.Mode),
+		SLO:             aggregate.SLOConfigFromDurations(resolved.Benchmark.SLO.TTFT, resolved.Benchmark.SLO.TPOT, resolved.Benchmark.SLO.E2E),
 		SafetyLimits: artifacts.SafetyLimits{
 			MaxConcurrency:  resolved.Benchmark.Safety.MaxConcurrency,
 			MaxRequests:     resolved.Benchmark.Safety.MaxRequests,
@@ -410,8 +437,14 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		},
 	}
 
-	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, lifecycleArrivals(lifecycleResult))
-	printLifecycleSummary(stdout, runID, lifecycleResult, metadata.Workload, metadata.TokenTiming, metadata.Load, warmupMetadata, measurementMetadata, requestArtifacts, artifactPath, runErr, runErrorClass)
+	arrivals := lifecycleArrivals(lifecycleResult)
+	runSummary, summaryErr := artifacts.CalculateSummary(metadata, requestArtifacts, arrivals)
+	if summaryErr != nil {
+		fmt.Fprintf(stderr, "error: aggregate run summary: %v\n", summaryErr)
+		return 1
+	}
+	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, arrivals)
+	printLifecycleSummary(stdout, metadata, runSummary, requestArtifacts, artifactPath)
 	if artifactErr != nil {
 		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
 		return 1
@@ -617,58 +650,48 @@ func parseCLITokenTimingMode(value string) (config.TokenTimingMode, error) {
 	}
 }
 
-func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.LifecycleResult, prepared artifacts.WorkloadMetadata, tokenTiming artifacts.TokenTimingMetadata, load artifacts.LoadMetadata, warmup, measurement artifacts.PhaseMetadata, requestArtifacts []artifacts.RequestArtifact, artifactPath string, runErr error, runErrorClass string) {
-	fmt.Fprintf(writer, "Run:                 %s\n", runID)
-	fmt.Fprintf(writer, "Workload mode:       %s\n", prepared.Mode)
-	fmt.Fprintf(writer, "Token timing:        %s\n", tokenTiming.Mode)
-	if prepared.Input != nil && prepared.Tokenizer != nil {
-		fmt.Fprintf(writer, "Input target:        %d tokens\n", prepared.Input.TargetTokens)
-		fmt.Fprintf(writer, "Input resolved:      %d tokens\n", prepared.Input.ResolvedTokens)
-		fmt.Fprintf(writer, "Input contract:      %s\n", prepared.Input.Contract)
-		fmt.Fprintf(writer, "Tokenizer:           %s/%s\n", prepared.Tokenizer.Adapter, prepared.Tokenizer.Model)
+func printLifecycleSummary(writer io.Writer, metadata artifacts.RunMetadata, summary aggregate.RunSummary, requestArtifacts []artifacts.RequestArtifact, artifactPath string) {
+	fmt.Fprintf(writer, "Run:                         %s\n", summary.RunID)
+	fmt.Fprintf(writer, "Run status:                  %s\n", summary.RunStatus)
+	if summary.ErrorClass != "" {
+		fmt.Fprintf(writer, "Run error class:             %s\n", summary.ErrorClass)
 	}
-	fmt.Fprintf(writer, "Output max requested: %d tokens\n", prepared.Output.RequestedMaxTokens)
-	fmt.Fprintf(writer, "Prompt bytes:        %d\n", prepared.PromptBytes)
-	fmt.Fprintf(writer, "Prompt SHA256:       %s\n", prepared.PromptSHA256)
-	fmt.Fprintf(writer, "Mode:                %s\n", lifecycle.LoadMode)
-	if lifecycle.LoadMode == benchmark.LoadModeOpenLoop {
-		counts := lifecycle.Measurement.ArrivalCounts
-		fmt.Fprintf(writer, "Request rate:        %g/s\n", load.OpenLoop.RequestRate)
-		fmt.Fprintf(writer, "Duration:            %s\n", load.OpenLoop.Duration)
-		fmt.Fprintf(writer, "Planned arrivals:    %d\n", counts.Planned)
-		fmt.Fprintf(writer, "Processed arrivals:  %d\n", counts.Processed)
-		fmt.Fprintf(writer, "Started requests:    %d\n", counts.Started)
-		fmt.Fprintf(writer, "Client-limited:      %d\n", counts.ClientLimited)
-		fmt.Fprintf(writer, "Scheduler-limited:   %d\n", counts.SchedulerLimited)
-		fmt.Fprintf(writer, "Maximum in flight:   %d\n", counts.MaxObservedInFlight)
+	fmt.Fprintf(writer, "Summary complete:            %t\n", summary.Complete)
+	fmt.Fprintf(writer, "Mode:                        %s\n", summary.Load.Mode)
+	fmt.Fprintf(writer, "Workload mode:               %s\n", summary.Workload.Mode)
+	fmt.Fprintf(writer, "Token timing:                %s\n", metadata.TokenTiming.Mode)
+	if summary.Workload.InputTargetTokens != nil {
+		fmt.Fprintf(writer, "Input target/resolved:       %d / %d tokens\n", *summary.Workload.InputTargetTokens, *summary.Workload.InputResolvedTokens)
 	}
-	fmt.Fprintf(writer, "Warmup requested:    %d\n", warmup.Requested)
-	fmt.Fprintf(writer, "Warmup attempted:    %d\n", warmup.Attempted)
-	fmt.Fprintf(writer, "Warmup successful:   %d\n", warmup.Successful)
-	fmt.Fprintf(writer, "Warmup failed:       %d\n", warmup.Failed)
-	fmt.Fprintf(writer, "Measured requested:  %d\n", measurement.Requested)
-	fmt.Fprintf(writer, "Measured attempted:  %d\n", measurement.Attempted)
-	fmt.Fprintf(writer, "Measured successful: %d\n", measurement.Successful)
-	fmt.Fprintf(writer, "Measured failed:     %d\n", measurement.Failed)
-	if lifecycle.LoadMode == benchmark.LoadModeClosedLoop {
-		fmt.Fprintf(writer, "Concurrency:         %d requested\n", measurement.RequestedConcurrency)
-		fmt.Fprintf(writer, "Warmup workers:      %d effective\n", warmup.EffectiveWorkers)
-		fmt.Fprintf(writer, "Measured workers:    %d effective\n", measurement.EffectiveWorkers)
-		fmt.Fprintf(writer, "Warmup max active:   %d requests\n", warmup.MaxObservedActive)
-		fmt.Fprintf(writer, "Measured max active: %d requests\n", measurement.MaxObservedActive)
+	fmt.Fprintf(writer, "Output max requested:        %d tokens\n", summary.Workload.RequestedOutputMaxTokens)
+	fmt.Fprintf(writer, "Warmup successful:           %d / %d\n", metadata.Warmup.Successful, metadata.Warmup.Attempted)
+	fmt.Fprintf(writer, "Measured successful:         %d / %d\n", summary.Counts.Successful, summary.Counts.Started)
+	fmt.Fprintf(writer, "Measured failed:             %d (request=%d timeout=%d parent=%d drain=%d)\n", summary.Counts.Failed, summary.Counts.RequestError, summary.Counts.RequestTimeout, summary.Counts.ParentCancelled, summary.Counts.DrainTimeout)
+	fmt.Fprintf(writer, "Drain timed out:             %t\n", metadata.Drain.TimedOut)
+	fmt.Fprintf(writer, "Drain cancellations:         %d requests\n", metadata.Drain.CancelledRequests)
+	printRatio(writer, "Request success rate", summary.RequestRates.SuccessRate)
+	printDistributionTriplet(writer, "TTFT p50/p95/p99", summary.Latency.TTFT)
+	printDistributionTriplet(writer, "TPOT p50/p95/p99", summary.Latency.TPOT)
+	printDistributionTriplet(writer, "E2E p50/p95/p99", summary.Latency.E2E)
+	printRate(writer, "Successful req throughput", summary.RequestRates.SuccessfulRequestThroughput)
+	printRate(writer, "Output token throughput", summary.Tokens.Throughput.Output)
+	fmt.Fprintf(writer, "True ITL requests:           %d / %d\n", summary.ITL.AvailableRequests, summary.ITL.EligibleSuccessfulRequests)
+	printDistributionTriplet(writer, "ITL p50/p95/p99", summary.ITL.Intervals)
+	if summary.Load.OpenLoop != nil {
+		open := summary.Load.OpenLoop
+		fmt.Fprintf(writer, "Offered rate:                %g requests/s\n", open.ConfiguredRequestRate)
+		fmt.Fprintf(writer, "Planned/started arrivals:    %d / %d\n", open.PlannedArrivals, open.StartedArrivals)
+		printRate(writer, "Actual start rate", open.ActualStartRate)
+		printRatio(writer, "Delivery ratio", open.DeliveryRatio)
+		fmt.Fprintf(writer, "Client-limited:              %d\n", open.ClientLimited)
+		fmt.Fprintf(writer, "Scheduler-limited:           %d\n", open.SchedulerLimited)
+		printDistributionValue(writer, "Scheduler lag p95", summary.SchedulerLag, summary.SchedulerLag.P95)
 	}
-	fmt.Fprintf(writer, "Drain timeout:       %s\n", lifecycle.Drain.Timeout)
-	fmt.Fprintf(writer, "Drain timed out:     %t\n", lifecycle.Drain.TimedOut)
-	fmt.Fprintf(writer, "Drain cancellations: %d requests\n", len(lifecycle.Drain.CancelledRequestIDs))
-	fmt.Fprintf(writer, "Lifecycle elapsed:   %s\n", time.Duration(lifecycle.ElapsedNS))
-	fmt.Fprintf(writer, "Measurement elapsed: %s\n", time.Duration(measurement.ElapsedNS))
-	if runErr != nil {
-		fmt.Fprintf(writer, "Run error:            %s\n", runErr)
+	printSLOSummary(writer, summary.SLO)
+	if metadata.Error != "" {
+		fmt.Fprintf(writer, "Run error:                    %s\n", metadata.Error)
 	}
-	if runErrorClass != "" {
-		fmt.Fprintf(writer, "Run error class:      %s\n", runErrorClass)
-	}
-	if measurement.Requested == 1 && measurement.Successful == 1 {
+	if summary.Counts.RequestedOrPlanned == 1 && summary.Counts.Successful == 1 {
 		var measured *artifacts.RequestArtifact
 		for index := range requestArtifacts {
 			if requestArtifacts[index].Phase == benchmark.RequestPhaseMeasured && requestArtifacts[index].Outcome == benchmark.OutcomeSucceeded {
@@ -680,20 +703,60 @@ func printLifecycleSummary(writer io.Writer, runID string, lifecycle benchmark.L
 			fmt.Fprintln(writer)
 			printRequestSummary(writer, measured.Observation, measured.Metrics)
 		}
-	} else if tokenTiming.Mode == "vllm" && measurement.Successful > 0 {
-		available := 0
-		for _, request := range requestArtifacts {
-			if request.Phase == benchmark.RequestPhaseMeasured && request.Outcome == benchmark.OutcomeSucceeded && request.Metrics.ITL.Available {
-				available++
-			}
-		}
-		fmt.Fprintf(writer, "Measured requests with true ITL: %d / %d\n", available, measurement.Successful)
 	}
 	if artifactPath != "" {
-		fmt.Fprintf(writer, "Artifacts:  %s\n", artifactPath)
+		fmt.Fprintf(writer, "Artifacts:                    %s\n", artifactPath)
 	} else {
-		fmt.Fprintln(writer, "Artifacts:  unavailable")
+		fmt.Fprintln(writer, "Artifacts:                    unavailable")
 	}
+}
+
+func printDistributionTriplet(writer io.Writer, label string, value aggregate.Distribution) {
+	if !value.Available {
+		fmt.Fprintf(writer, "%-29s unavailable (%s)\n", label+":", value.Reason)
+		return
+	}
+	fmt.Fprintf(writer, "%-29s %.3f / %.3f / %.3f %s (n=%d)\n", label+":", value.P50, value.P95, value.P99, value.Unit, value.SampleCount)
+}
+
+func printDistributionValue(writer io.Writer, label string, distribution aggregate.Distribution, value float64) {
+	if !distribution.Available {
+		fmt.Fprintf(writer, "%-29s unavailable (%s)\n", label+":", distribution.Reason)
+		return
+	}
+	fmt.Fprintf(writer, "%-29s %.3f %s\n", label+":", value, distribution.Unit)
+}
+
+func printRatio(writer io.Writer, label string, value aggregate.Ratio) {
+	if !value.Available {
+		fmt.Fprintf(writer, "%-29s unavailable (%s)\n", label+":", value.Reason)
+		return
+	}
+	fmt.Fprintf(writer, "%-29s %.1f%% (%d/%d)\n", label+":", value.Value*100, value.Numerator, value.Denominator)
+}
+
+func printRate(writer io.Writer, label string, value aggregate.Rate) {
+	if !value.Available {
+		fmt.Fprintf(writer, "%-29s unavailable (%s)\n", label+":", value.Reason)
+		return
+	}
+	fmt.Fprintf(writer, "%-29s %.3f %s\n", label+":", value.Value, value.Unit)
+}
+
+func printSLOSummary(writer io.Writer, summary aggregate.SLOSummary) {
+	if summary.TTFT != nil {
+		fmt.Fprintf(writer, "TTFT SLO:                    <= %.3f ms\n", summary.TTFT.ThresholdMS)
+	}
+	if summary.TPOT != nil {
+		fmt.Fprintf(writer, "TPOT SLO:                    <= %.3f ms/token\n", summary.TPOT.ThresholdMS)
+	}
+	if summary.E2E != nil {
+		fmt.Fprintf(writer, "E2E SLO:                     <= %.3f ms\n", summary.E2E.ThresholdMS)
+	}
+	if summary.Configured {
+		fmt.Fprintf(writer, "SLO good/evaluable:          %d / %d\n", summary.GoodRequests, summary.EvaluableRequests)
+	}
+	printRate(writer, "Goodput", summary.Goodput)
 }
 
 func printRequestSummary(writer io.Writer, observation benchmark.RequestObservation, requestMetrics metrics.RequestMetrics) {

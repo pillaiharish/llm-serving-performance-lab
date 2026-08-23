@@ -11,12 +11,13 @@ import (
 	"sort"
 	"time"
 
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = aggregate.SchemaVersion
 
 const (
 	RunStatusCompleted = "completed"
@@ -134,6 +135,7 @@ type RunMetadata struct {
 	RequestTimeout    string                      `json:"request_timeout"`
 	Workload          WorkloadMetadata            `json:"workload"`
 	TokenTiming       TokenTimingMetadata         `json:"token_timing"`
+	SLO               aggregate.SLOConfig         `json:"slo"`
 	SafetyLimits      SafetyLimits                `json:"safety_limits"`
 	Load              LoadMetadata                `json:"load"`
 	ClientDiagnostics benchmark.ClientDiagnostics `json:"client_diagnostics"`
@@ -155,10 +157,11 @@ type RequestArtifact struct {
 type Writer struct {
 	outputDir string
 	writeFile func(string, any) error
+	writeCSV  func(string, aggregate.RunSummary) error
 }
 
 func NewWriter(outputDir string) *Writer {
-	return &Writer{outputDir: outputDir, writeFile: writeJSON}
+	return &Writer{outputDir: outputDir, writeFile: writeJSON, writeCSV: writeSummaryCSV}
 }
 
 // Write stages a complete lifecycle run and atomically renames it into place.
@@ -199,6 +202,10 @@ func (w *Writer) WriteWithArrivals(metadata RunMetadata, requests []RequestArtif
 	if err := validateMetadata(metadata, warmupSummary, measuredSummary, ordered, orderedArrivals); err != nil {
 		return "", err
 	}
+	runSummary, err := CalculateSummary(metadata, ordered, orderedArrivals)
+	if err != nil {
+		return "", fmt.Errorf("calculate run summary: %w", err)
+	}
 
 	if err := os.MkdirAll(w.outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("create artifact output directory: %w", err)
@@ -226,6 +233,16 @@ func (w *Writer) WriteWithArrivals(metadata RunMetadata, requests []RequestArtif
 		writeFile = writeJSON
 	}
 	if err := writeFile(filepath.Join(temporaryDirectory, "run.json"), metadata); err != nil {
+		return "", err
+	}
+	if err := writeFile(filepath.Join(temporaryDirectory, "summary.json"), runSummary); err != nil {
+		return "", err
+	}
+	writeCSV := w.writeCSV
+	if writeCSV == nil {
+		writeCSV = writeSummaryCSV
+	}
+	if err := writeCSV(filepath.Join(temporaryDirectory, "summary.csv"), runSummary); err != nil {
 		return "", err
 	}
 	warmupRoot := filepath.Join(temporaryDirectory, "warmup", "requests")
@@ -314,6 +331,10 @@ func validateRequests(metadata RunMetadata, requests []RequestArtifact) (phaseAr
 		}
 		if err := validateRequestTokenTiming(metadata.TokenTiming, request); err != nil {
 			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request %s token timing: %w", observation.RequestID, err)
+		}
+		wantMetrics := metrics.Calculate(observation)
+		if !reflect.DeepEqual(request.Metrics, wantMetrics) {
+			return phaseArtifactSummary{}, phaseArtifactSummary{}, fmt.Errorf("request %s metrics do not match raw observation evidence", observation.RequestID)
 		}
 		key := string(request.Phase) + ":" + observation.RequestID
 		if _, exists := seen[key]; exists {
@@ -625,6 +646,8 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 		return fmt.Errorf("derive arrival offsets: %w", err)
 	}
 	started := 0
+	clientLimited := 0
+	schedulerLimited := 0
 	for _, arrival := range phaseArrivals {
 		if arrival.Sequence <= 0 || arrival.Sequence > counts.Planned || arrival.ScheduledAfterNS < 0 || !arrival.ScheduledAt.Equal(phase.StartedAt.Add(time.Duration(arrival.ScheduledAfterNS))) {
 			return fmt.Errorf("invalid arrival identity or scheduled timing")
@@ -643,7 +666,13 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 			if arrival.RequestID == nil || arrival.ActualStartedAt == nil || arrival.ActualStartedAfterNS == nil || arrival.SchedulerLagNS == nil || *arrival.SchedulerLagNS < 0 || !requestExists || *arrival.RequestID != request.Observation.RequestID || request.Observation.RequestStartedAt == nil || !arrival.ActualStartedAt.Equal(*request.Observation.RequestStartedAt) || *arrival.ActualStartedAfterNS != arrival.ActualStartedAt.Sub(*phase.StartedAt).Nanoseconds() || *arrival.SchedulerLagNS != arrival.ActualStartedAt.Sub(arrival.ScheduledAt).Nanoseconds() {
 				return fmt.Errorf("started arrival %d has inconsistent request timing or identity", arrival.Sequence)
 			}
-		case benchmark.ArrivalClientLimited, benchmark.ArrivalSchedulerLimited:
+		case benchmark.ArrivalClientLimited:
+			clientLimited++
+			if arrival.RequestID != nil || arrival.ActualStartedAt != nil || arrival.ActualStartedAfterNS != nil || arrival.SchedulerLagNS != nil || requestExists {
+				return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
+			}
+		case benchmark.ArrivalSchedulerLimited:
+			schedulerLimited++
 			if arrival.RequestID != nil || arrival.ActualStartedAt != nil || arrival.ActualStartedAfterNS != nil || arrival.SchedulerLagNS != nil || requestExists {
 				return fmt.Errorf("unstarted arrival %d contains request evidence", arrival.Sequence)
 			}
@@ -651,8 +680,8 @@ func validateOpenLoopPhase(phase PhaseMetadata, wantPhase benchmark.RequestPhase
 			return fmt.Errorf("invalid arrival disposition %q", arrival.Disposition)
 		}
 	}
-	if started != counts.Started {
-		return fmt.Errorf("started arrival records differ from counts")
+	if started != counts.Started || clientLimited != counts.ClientLimited || schedulerLimited != counts.SchedulerLimited {
+		return fmt.Errorf("arrival disposition records differ from counts")
 	}
 	return nil
 }
@@ -707,6 +736,17 @@ func writeJSONLines(path string, values []benchmark.ArrivalRecord) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeSummaryCSV(path string, summary aggregate.RunSummary) error {
+	encoded, err := aggregate.MarshalCSV(summary)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", filepath.Base(path), err)
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }
