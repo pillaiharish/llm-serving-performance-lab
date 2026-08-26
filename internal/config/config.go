@@ -15,13 +15,14 @@ var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Config is the fully resolved configuration used for one benchmark run.
 type Config struct {
-	Version   int
-	Endpoint  Endpoint
-	Request   Request
-	Workload  Workload
-	Runtime   Runtime
-	Capture   Capture
-	Benchmark Benchmark
+	Version    int
+	Endpoint   Endpoint
+	Request    Request
+	Workload   Workload
+	Runtime    Runtime
+	Capture    Capture
+	Benchmark  Benchmark
+	Experiment Experiment
 }
 
 type WorkloadMode string
@@ -127,6 +128,18 @@ type Safety struct {
 	MaxOutputTokens int
 }
 
+type Experiment struct {
+	ConcurrencyValues []int
+	RequestRateValues []float64
+	InputTokenValues  []int
+	OutputTokenValues []int
+	Safety            ExperimentSafety
+}
+
+type ExperimentSafety struct {
+	MaxPoints int
+}
+
 type benchmarkFields struct {
 	Mode          bool
 	Concurrency   bool
@@ -196,7 +209,22 @@ func Default() Config {
 				MaxOutputTokens: 32768,
 			},
 		},
+		Experiment: Experiment{Safety: ExperimentSafety{MaxPoints: 64}},
 	}
+}
+
+// Clone returns a fully independent configuration, including pointer and
+// slice-backed values used by SLOs and experiment axes.
+func (c Config) Clone() Config {
+	clone := c
+	clone.Benchmark.SLO.TTFT = durationPointerValue(c.Benchmark.SLO.TTFT)
+	clone.Benchmark.SLO.TPOT = durationPointerValue(c.Benchmark.SLO.TPOT)
+	clone.Benchmark.SLO.E2E = durationPointerValue(c.Benchmark.SLO.E2E)
+	clone.Experiment.ConcurrencyValues = append([]int(nil), c.Experiment.ConcurrencyValues...)
+	clone.Experiment.RequestRateValues = append([]float64(nil), c.Experiment.RequestRateValues...)
+	clone.Experiment.InputTokenValues = append([]int(nil), c.Experiment.InputTokenValues...)
+	clone.Experiment.OutputTokenValues = append([]int(nil), c.Experiment.OutputTokenValues...)
+	return clone
 }
 
 func (c *Config) ApplyOverrides(overrides Overrides) {
@@ -444,6 +472,13 @@ func (c Config) Validate() error {
 func durationPointer(value time.Duration) *time.Duration {
 	copy := value
 	return &copy
+}
+
+func durationPointerValue(value *time.Duration) *time.Duration {
+	if value == nil {
+		return nil
+	}
+	return durationPointer(*value)
 }
 
 func validateBaseURL(rawURL string) error {

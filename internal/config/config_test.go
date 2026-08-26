@@ -335,6 +335,33 @@ func TestResolveAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadExperimentAxesAndCloneIndependence(t *testing.T) {
+	resolved, err := Load(writeConfig(t, `version: 1
+endpoint: {base_url: http://localhost:8000/v1, model: model}
+request: {prompt: hello}
+experiment:
+  concurrency_values: [8, 1, 4]
+  request_rate_values: []
+  input_token_values: []
+  output_token_values: [32, 64]
+  safety: {max_points: 12}
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(resolved.Experiment.ConcurrencyValues) != 3 || resolved.Experiment.ConcurrencyValues[0] != 8 || resolved.Experiment.OutputTokenValues[1] != 64 || resolved.Experiment.Safety.MaxPoints != 12 {
+		t.Fatalf("experiment = %+v", resolved.Experiment)
+	}
+	threshold := time.Second
+	resolved.Benchmark.SLO.TTFT = &threshold
+	clone := resolved.Clone()
+	clone.Experiment.ConcurrencyValues[0] = 99
+	*clone.Benchmark.SLO.TTFT = 2 * time.Second
+	if resolved.Experiment.ConcurrencyValues[0] != 8 || *resolved.Benchmark.SLO.TTFT != time.Second {
+		t.Fatalf("clone aliased original: original=%+v clone=%+v", resolved, clone)
+	}
+}
+
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
