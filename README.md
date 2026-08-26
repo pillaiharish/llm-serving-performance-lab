@@ -185,6 +185,118 @@ the terminal or accumulated in memory. With the default zero warmup,
 `concurrency: 1`, and `requests: 1`, behavior remains compatible with the
 original single-request invocation and its detailed scalar terminal summary.
 
+## Run an experiment sweep
+
+`bench` always executes one benchmark run. `sweep` is an explicit experiment
+command that expands user-supplied axes into multiple independent schema-7
+runs and combines their existing summaries into an experiment-schema-1 table.
+It never turns a list in configuration into implicit `bench` behavior.
+
+Supported axes are closed-loop concurrency, open-loop offered request rate,
+token-length input size, and requested maximum output tokens. Values are
+explicit: Slentore does not generate powers of two, search for a knee, select
+an optimum, or repeat points automatically.
+
+```yaml
+experiment:
+  concurrency_values: [1, 4, 16]
+  request_rate_values: []
+  input_token_values: [128, 512]
+  output_token_values: [64, 128]
+  safety:
+    max_points: 64
+```
+
+The corresponding flags are `--concurrency-values`,
+`--request-rate-values`, `--input-token-values`,
+`--output-token-values`, and `--max-sweep-points`. CLI lists replace, rather
+than merge with, YAML lists. A scalar CLI flag conflicts with an active axis
+for the same field. The base YAML scalar supplies a fixed value when that
+dimension is not swept.
+
+Closed-loop concurrency:
+
+```bash
+build/slentore sweep \
+  --config configs/ollama.example.yaml \
+  --concurrency-values 1,2,4,8
+```
+
+Open-loop offered rate:
+
+```bash
+build/slentore sweep \
+  --config configs/ollama.example.yaml \
+  --mode open-loop \
+  --request-rate-values 5,10,25 \
+  --duration 10s \
+  --max-in-flight 64
+```
+
+Token shape:
+
+```bash
+build/slentore sweep \
+  --config configs/token-length.example.yaml \
+  --input-token-values 128,512,2048 \
+  --output-token-values 32,64
+```
+
+Combined load and token shape:
+
+```bash
+build/slentore sweep \
+  --config configs/token-length.example.yaml \
+  --input-token-values 128,512 \
+  --output-token-values 64,128 \
+  --concurrency-values 1,4,16
+```
+
+Values retain their declared order. For multiple axes, input tokens are the
+outer loop, output tokens the next loop, and the applicable load value the
+inner loop. Thus `[128,512] × [64,128] × [1,4]` produces eight points beginning
+with `(128,64,1)`, `(128,64,4)`. Duplicate, non-positive, non-finite,
+mode-inapplicable, unsafe, and over-ceiling values reject the entire plan
+before artifacts. The Cartesian product is never truncated; its default
+client guardrail is 64 points and can be raised explicitly.
+
+Points run strictly one at a time against the same endpoint. Every point gets
+its own client/transport, workload preparation, run ID, complete warmup,
+measurement, stop-admission, drain, summary, and child artifact tree. Slentore
+does not restart the server, clear caches, reset a GPU, or insert cooldowns
+between points. Persisted order therefore makes cache, thermal, and temporal
+state visible as possible experimental factors.
+
+A child request, timeout, SLO observation, or load-delivery failure is useful
+experiment evidence and does not stop later points. The experiment is
+orchestration-complete when every point has a terminal disposition, even if a
+child run failed. A workload/tokenizer preparation failure records a
+`preflight_failed` row without fabricating a run ID and later points continue.
+Ctrl-C cancels and drains the active child through the ordinary lifecycle,
+leaves future points `not_started`, and atomically publishes a partial
+`cancelled` experiment. There is no resume or automatic retry.
+
+Sweep artifacts use this hierarchy beneath `capture.output_dir`:
+
+```text
+experiments/<experiment-id>/
+├── experiment.json       # experiment_schema_version: 1
+├── summary.csv            # one row for every planned point
+└── runs/<child-run-id>/
+    ├── run.json           # schema_version: 7
+    ├── summary.json       # schema_version: 7
+    ├── summary.csv
+    ├── warmup/
+    └── measured/
+```
+
+Executed rows append the canonical single-run CSV fields exactly; points that
+never produced a child leave those fields empty. Experiment publication
+stages and validates the complete tree before one atomic rename. Exit 0
+requires every child to complete successfully, exit 1 means a published
+experiment contains a failed/cancelled/preflight point or orchestration failed,
+and exit 2 means the plan or base configuration was rejected before execution.
+
 ## Workload modes
 
 ### Direct prompt workload
@@ -825,11 +937,12 @@ go test -race ./...
 
 ## Current scope
 
-This version runs one optional request-count warmup and one measured closed- or
-open-loop cohort and summarizes that one run. It contains no warmup-duration
-control, load or workload sweep, database, client-capacity calibration, GPU
-discovery, deployment automation, or observability integration. The lifecycle
-coordinator reuses the existing
+This version can run one optional request-count warmup and one measured closed-
+or open-loop cohort directly, or orchestrate explicit load/token axes as a
+sequential experiment of independent runs. It contains no warmup-duration
+control, adaptive search, repetitions, database, client-capacity calibration,
+GPU discovery, deployment automation, or observability integration. The
+lifecycle coordinator reuses the existing
 `Runner.RunRequest` primitive
 without changing how an individual request is observed or how its metrics are
 calculated. The fake server provides controlled HTTP/SSE validation and an

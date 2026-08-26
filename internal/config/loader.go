@@ -10,13 +10,14 @@ import (
 )
 
 type fileConfig struct {
-	Version   *int          `yaml:"version"`
-	Endpoint  fileEndpoint  `yaml:"endpoint"`
-	Request   fileRequest   `yaml:"request"`
-	Workload  *fileWorkload `yaml:"workload"`
-	Runtime   fileRuntime   `yaml:"runtime"`
-	Capture   fileCapture   `yaml:"capture"`
-	Benchmark fileBenchmark `yaml:"benchmark"`
+	Version    *int            `yaml:"version"`
+	Endpoint   fileEndpoint    `yaml:"endpoint"`
+	Request    fileRequest     `yaml:"request"`
+	Workload   *fileWorkload   `yaml:"workload"`
+	Runtime    fileRuntime     `yaml:"runtime"`
+	Capture    fileCapture     `yaml:"capture"`
+	Benchmark  fileBenchmark   `yaml:"benchmark"`
+	Experiment *fileExperiment `yaml:"experiment"`
 }
 
 type fileEndpoint struct {
@@ -85,6 +86,18 @@ type fileSafety struct {
 	MaxInFlight     *int     `yaml:"max_in_flight"`
 	MaxInputTokens  *int     `yaml:"max_input_tokens"`
 	MaxOutputTokens *int     `yaml:"max_output_tokens"`
+}
+
+type fileExperiment struct {
+	ConcurrencyValues []int                 `yaml:"concurrency_values"`
+	RequestRateValues []float64             `yaml:"request_rate_values"`
+	InputTokenValues  []int                 `yaml:"input_token_values"`
+	OutputTokenValues []int                 `yaml:"output_token_values"`
+	Safety            *fileExperimentSafety `yaml:"safety"`
+}
+
+type fileExperimentSafety struct {
+	MaxPoints *int `yaml:"max_points"`
 }
 
 // Load applies a YAML file, when provided, over the built-in defaults.
@@ -254,6 +267,15 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Benchmark.Safety.MaxOutputTokens != nil {
 		resolved.Benchmark.Safety.MaxOutputTokens = *raw.Benchmark.Safety.MaxOutputTokens
+	}
+	if raw.Experiment != nil {
+		resolved.Experiment.ConcurrencyValues = append([]int(nil), raw.Experiment.ConcurrencyValues...)
+		resolved.Experiment.RequestRateValues = append([]float64(nil), raw.Experiment.RequestRateValues...)
+		resolved.Experiment.InputTokenValues = append([]int(nil), raw.Experiment.InputTokenValues...)
+		resolved.Experiment.OutputTokenValues = append([]int(nil), raw.Experiment.OutputTokenValues...)
+		if raw.Experiment.Safety != nil && raw.Experiment.Safety.MaxPoints != nil {
+			resolved.Experiment.Safety.MaxPoints = *raw.Experiment.Safety.MaxPoints
+		}
 	}
 
 	return resolved, nil
