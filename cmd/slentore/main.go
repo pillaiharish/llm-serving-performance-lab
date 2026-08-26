@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
-	"time"
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
@@ -41,6 +40,9 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, lo
 		printRootUsage(stdout)
 		return 0
 	}
+	if args[0] == "sweep" {
+		return runSweepContext(ctx, args[1:], stdout, stderr, lookupEnv)
+	}
 	if args[0] != "bench" {
 		fmt.Fprintf(stderr, "error: unknown command %q\n", args[0])
 		printRootUsage(stderr)
@@ -57,71 +59,8 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 	flags := flag.NewFlagSet("slentore bench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { printBenchUsage(flags.Output()) }
-
-	var configPath string
-	var baseURL string
-	var model string
-	var prompt string
-	var maxOutputTokens int
-	var temperature float64
-	var timeoutText string
-	var outputDir string
-	var apiKeyEnv string
-	var concurrency int
-	var requests int
-	var maxConcurrency int
-	var maxRequests int
-	var warmupRequests int
-	var drainTimeoutText string
-	var modeText string
-	var requestRate float64
-	var durationText string
-	var maxInFlight int
-	var maxRequestRateCeiling float64
-	var maxInFlightCeiling int
-	var workloadModeText string
-	var inputTokens int
-	var tokenizerAdapterText string
-	var tokenizerURL string
-	var maxInputTokensCeiling int
-	var maxOutputTokensCeiling int
-	var tokenTimingText string
-	var sloTTFTText string
-	var sloTPOTText string
-	var sloE2EText string
-
-	flags.StringVar(&configPath, "config", "", "path to a version 1 YAML configuration file")
-	flags.StringVar(&baseURL, "base-url", "", "OpenAI-compatible API root, normally ending in /v1")
-	flags.StringVar(&model, "model", "", "model identifier")
-	flags.StringVar(&prompt, "prompt", "", "single user prompt (never persisted)")
-	flags.IntVar(&maxOutputTokens, "max-output-tokens", 0, "maximum output tokens")
-	flags.Float64Var(&temperature, "temperature", 0, "sampling temperature")
-	flags.StringVar(&timeoutText, "timeout", "", "request timeout, such as 120s")
-	flags.StringVar(&outputDir, "output-dir", "", "artifact output directory")
-	flags.StringVar(&apiKeyEnv, "api-key-env", "", "environment variable containing the API key")
-	flags.IntVar(&concurrency, "concurrency", 0, "simultaneously active requests")
-	flags.IntVar(&requests, "requests", 0, "total requests to attempt")
-	flags.IntVar(&maxConcurrency, "max-concurrency", 0, "client admission ceiling for concurrency")
-	flags.IntVar(&maxRequests, "max-requests", 0, "client admission ceiling for total requests")
-	flags.IntVar(&warmupRequests, "warmup-requests", 0, "warmup requests to attempt before measurement")
-	flags.StringVar(&drainTimeoutText, "drain-timeout", "", "maximum drain duration after measured admission stops")
-	flags.StringVar(&modeText, "mode", "", "load mode: closed-loop or open-loop")
-	flags.Float64Var(&requestRate, "request-rate", 0, "open-loop offered arrivals per second")
-	flags.StringVar(&durationText, "duration", "", "open-loop measurement duration, such as 30s")
-	flags.IntVar(&maxInFlight, "max-in-flight", 0, "open-loop admitted request bound")
-	flags.Float64Var(&maxRequestRateCeiling, "max-request-rate-ceiling", 0, "open-loop request-rate safety ceiling")
-	flags.IntVar(&maxInFlightCeiling, "max-in-flight-ceiling", 0, "open-loop in-flight safety ceiling")
-	flags.StringVar(&workloadModeText, "workload-mode", "", "workload mode: prompt or token-length")
-	flags.IntVar(&inputTokens, "input-tokens", 0, "target rendered chat input tokens")
-	flags.StringVar(&tokenizerAdapterText, "tokenizer-adapter", "", "tokenizer adapter: vllm")
-	flags.StringVar(&tokenizerURL, "tokenizer-url", "", "exact vLLM /tokenize endpoint")
-	flags.IntVar(&maxInputTokensCeiling, "max-input-tokens-ceiling", 0, "client safety ceiling for target input tokens")
-	flags.IntVar(&maxOutputTokensCeiling, "max-output-tokens-ceiling", 0, "client safety ceiling for requested output tokens")
-	flags.StringVar(&tokenTimingText, "token-timing", "", "token timing evidence: disabled or vllm")
-	flags.StringVar(&sloTTFTText, "slo-ttft", "", "maximum successful-request TTFT, such as 800ms")
-	flags.StringVar(&sloTPOTText, "slo-tpot", "", "maximum successful-request TPOT, such as 30ms")
-	flags.StringVar(&sloE2EText, "slo-e2e", "", "maximum successful-request E2E latency, such as 5s")
-
+	var values runFlagValues
+	registerRunFlags(flags, &values)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -132,152 +71,17 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		fmt.Fprintf(stderr, "error: unexpected positional arguments: %v\n", flags.Args())
 		return 2
 	}
-
-	resolved, err := config.Load(configPath)
+	visited := make(map[string]bool)
+	flags.Visit(func(item *flag.Flag) { visited[item.Name] = true })
+	resolved, err := resolveRunConfig(values, visited)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
-
-	visited := make(map[string]bool)
-	flags.Visit(func(item *flag.Flag) { visited[item.Name] = true })
-	overrides := config.Overrides{}
-	if visited["base-url"] {
-		overrides.BaseURL = &baseURL
+	if _, err := benchmarkexec.ValidateStatic(resolved); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
 	}
-	if visited["model"] {
-		overrides.Model = &model
-	}
-	if visited["prompt"] {
-		overrides.Prompt = &prompt
-	}
-	if visited["workload-mode"] {
-		mode, parseErr := parseCLIWorkloadMode(workloadModeText)
-		if parseErr != nil {
-			fmt.Fprintf(stderr, "error: --workload-mode: %v\n", parseErr)
-			return 2
-		}
-		overrides.WorkloadMode = &mode
-	}
-	if visited["input-tokens"] {
-		overrides.InputTokens = &inputTokens
-	}
-	if visited["tokenizer-adapter"] {
-		adapter, parseErr := parseCLITokenizerAdapter(tokenizerAdapterText)
-		if parseErr != nil {
-			fmt.Fprintf(stderr, "error: --tokenizer-adapter: %v\n", parseErr)
-			return 2
-		}
-		overrides.TokenizerAdapter = &adapter
-	}
-	if visited["tokenizer-url"] {
-		overrides.TokenizerURL = &tokenizerURL
-	}
-	if visited["max-output-tokens"] {
-		overrides.MaxOutputTokens = &maxOutputTokens
-	}
-	if visited["temperature"] {
-		overrides.Temperature = &temperature
-	}
-	if visited["output-dir"] {
-		overrides.OutputDir = &outputDir
-	}
-	if visited["api-key-env"] {
-		overrides.APIKeyEnv = &apiKeyEnv
-	}
-	if visited["timeout"] {
-		timeout, err := time.ParseDuration(timeoutText)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: --timeout: %v\n", err)
-			return 2
-		}
-		overrides.Timeout = &timeout
-	}
-	if visited["concurrency"] {
-		overrides.Concurrency = &concurrency
-	}
-	if visited["requests"] {
-		overrides.Requests = &requests
-	}
-	if visited["max-concurrency"] {
-		overrides.MaxConcurrency = &maxConcurrency
-	}
-	if visited["max-requests"] {
-		overrides.MaxRequests = &maxRequests
-	}
-	if visited["warmup-requests"] {
-		overrides.WarmupRequests = &warmupRequests
-	}
-	if visited["drain-timeout"] {
-		drainTimeout, err := time.ParseDuration(drainTimeoutText)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: --drain-timeout: %v\n", err)
-			return 2
-		}
-		overrides.DrainTimeout = &drainTimeout
-	}
-	if visited["mode"] {
-		mode, err := parseCLILoadMode(modeText)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: --mode: %v\n", err)
-			return 2
-		}
-		overrides.Mode = &mode
-	}
-	if visited["request-rate"] {
-		overrides.RequestRate = &requestRate
-	}
-	if visited["duration"] {
-		duration, err := time.ParseDuration(durationText)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: --duration: %v\n", err)
-			return 2
-		}
-		overrides.Duration = &duration
-	}
-	if visited["max-in-flight"] {
-		overrides.MaxInFlight = &maxInFlight
-	}
-	if visited["max-request-rate-ceiling"] {
-		overrides.MaxRequestRate = &maxRequestRateCeiling
-	}
-	if visited["max-in-flight-ceiling"] {
-		overrides.MaxInFlightCeiling = &maxInFlightCeiling
-	}
-	if visited["max-input-tokens-ceiling"] {
-		overrides.MaxInputTokens = &maxInputTokensCeiling
-	}
-	if visited["max-output-tokens-ceiling"] {
-		overrides.MaxOutputTokensCeiling = &maxOutputTokensCeiling
-	}
-	if visited["token-timing"] {
-		mode, parseErr := parseCLITokenTimingMode(tokenTimingText)
-		if parseErr != nil {
-			fmt.Fprintf(stderr, "error: --token-timing: %v\n", parseErr)
-			return 2
-		}
-		overrides.TokenTimingMode = &mode
-	}
-	for _, sloFlag := range []struct {
-		name   string
-		text   string
-		target **time.Duration
-	}{
-		{name: "slo-ttft", text: sloTTFTText, target: &overrides.SLOTTFT},
-		{name: "slo-tpot", text: sloTPOTText, target: &overrides.SLOTPOT},
-		{name: "slo-e2e", text: sloE2EText, target: &overrides.SLOE2E},
-	} {
-		if !visited[sloFlag.name] {
-			continue
-		}
-		duration, parseErr := time.ParseDuration(sloFlag.text)
-		if parseErr != nil {
-			fmt.Fprintf(stderr, "error: --%s: %v\n", sloFlag.name, parseErr)
-			return 2
-		}
-		*sloFlag.target = &duration
-	}
-	resolved.ApplyOverrides(overrides)
 	apiKey, err := config.ResolveAPIKey(resolved.Endpoint.APIKeyEnv, lookupEnv)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
@@ -311,8 +115,8 @@ func slentoreVersion() string {
 }
 
 func printRootUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "Usage: slentore bench [options]")
-	fmt.Fprintln(writer, "Run a closed-loop or open-loop OpenAI-compatible streaming benchmark.")
+	fmt.Fprintln(writer, "Usage: slentore <bench|sweep> [options]")
+	fmt.Fprintln(writer, "Run one benchmark or a sequential deterministic experiment sweep.")
 }
 
 func printBenchUsage(writer io.Writer) {
