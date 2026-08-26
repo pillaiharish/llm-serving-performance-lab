@@ -12,6 +12,7 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/config"
 )
 
 var CSVColumns = append([]string{
@@ -145,6 +146,15 @@ func validatePublication(stagingRoot string, manifest Manifest, plan Plan, summa
 	if len(manifest.Points) != len(plan.Points) || manifest.PlannedPoints != len(plan.Points) || !reflect.DeepEqual(manifest.Axes, plan.Axes) {
 		return fmt.Errorf("manifest does not match experiment plan")
 	}
+	if manifest.Model != plan.Base.Endpoint.Model {
+		return fmt.Errorf("manifest model does not match experiment plan")
+	}
+	if manifest.LoadMode != plan.Base.Benchmark.Mode {
+		return fmt.Errorf("manifest load mode does not match experiment plan")
+	}
+	if manifest.WorkloadMode != plan.Base.Workload.Mode {
+		return fmt.Errorf("manifest workload mode does not match experiment plan")
+	}
 	counts := manifest
 	updateManifestCounts(&counts)
 	if counts.ExecutedPoints != manifest.ExecutedPoints || counts.PreflightFailedPoints != manifest.PreflightFailedPoints || counts.CancelledPoints != manifest.CancelledPoints || counts.NotStartedPoints != manifest.NotStartedPoints || counts.ChildRunsCompleted != manifest.ChildRunsCompleted || counts.ChildRunsFailed != manifest.ChildRunsFailed || counts.ChildRunsCancelled != manifest.ChildRunsCancelled {
@@ -197,7 +207,10 @@ func validatePublication(stagingRoot string, manifest Manifest, plan Plan, summa
 			}
 			seenRunIDs[*record.RunID] = struct{}{}
 			seenPaths[*record.RunPath] = struct{}{}
-			if err := validateChildSummary(stagingRoot, *record.RunPath, summary); err != nil {
+			if err := validateExecutedPointSummary(manifest, plan, record, summary); err != nil {
+				return fmt.Errorf("point %s: %w", record.PointID, err)
+			}
+			if err := validateChildSummary(stagingRoot, *record.RunPath, manifest, plan, record, summary); err != nil {
 				return fmt.Errorf("point %s: %w", record.PointID, err)
 			}
 		case PointPreflightFailed:
@@ -237,7 +250,69 @@ func validatePublication(stagingRoot string, manifest Manifest, plan Plan, summa
 	return nil
 }
 
-func validateChildSummary(stagingRoot, relativePath string, expected aggregate.RunSummary) error {
+func validateExecutedPointSummary(manifest Manifest, plan Plan, record PointRecord, summary aggregate.RunSummary) error {
+	if config.LoadMode(summary.Load.Mode) != manifest.LoadMode {
+		return fmt.Errorf("child summary load mode does not match manifest")
+	}
+	if config.LoadMode(summary.Load.Mode) != plan.Base.Benchmark.Mode {
+		return fmt.Errorf("child summary load mode does not match experiment plan")
+	}
+	switch plan.Base.Benchmark.Mode {
+	case config.LoadModeClosedLoop:
+		if record.Parameters.Concurrency == nil || record.Parameters.RequestRate != nil {
+			return fmt.Errorf("closed-loop point has invalid load parameters")
+		}
+		if summary.Load.ClosedLoop == nil || summary.Load.OpenLoop != nil {
+			return fmt.Errorf("closed-loop child summary has invalid load evidence")
+		}
+		if summary.Load.ClosedLoop.RequestedConcurrency != *record.Parameters.Concurrency {
+			return fmt.Errorf("child summary requested concurrency does not match point")
+		}
+	case config.LoadModeOpenLoop:
+		if record.Parameters.RequestRate == nil || record.Parameters.Concurrency != nil {
+			return fmt.Errorf("open-loop point has invalid load parameters")
+		}
+		if summary.Load.OpenLoop == nil || summary.Load.ClosedLoop != nil {
+			return fmt.Errorf("open-loop child summary has invalid load evidence")
+		}
+		if summary.Load.OpenLoop.ConfiguredRequestRate != *record.Parameters.RequestRate {
+			return fmt.Errorf("child summary configured request rate does not match point")
+		}
+	default:
+		return fmt.Errorf("experiment plan has invalid load mode %q", plan.Base.Benchmark.Mode)
+	}
+
+	if config.WorkloadMode(summary.Workload.Mode) != manifest.WorkloadMode {
+		return fmt.Errorf("child summary workload mode does not match manifest")
+	}
+	if config.WorkloadMode(summary.Workload.Mode) != plan.Base.Workload.Mode {
+		return fmt.Errorf("child summary workload mode does not match experiment plan")
+	}
+	if summary.Workload.RequestedOutputMaxTokens != record.Parameters.RequestedOutputTokens {
+		return fmt.Errorf("child summary requested output maximum does not match point")
+	}
+	switch plan.Base.Workload.Mode {
+	case config.WorkloadModeTokenLength:
+		if record.Parameters.InputTokens == nil {
+			return fmt.Errorf("token-length point lacks input token parameters")
+		}
+		if summary.Workload.InputTargetTokens == nil || *summary.Workload.InputTargetTokens != *record.Parameters.InputTokens {
+			return fmt.Errorf("child summary input target does not match point")
+		}
+		if summary.Workload.InputResolvedTokens == nil || *summary.Workload.InputResolvedTokens != *record.Parameters.InputTokens {
+			return fmt.Errorf("child summary resolved input does not match point")
+		}
+	case config.WorkloadModePrompt:
+		if record.Parameters.InputTokens != nil || summary.Workload.InputTargetTokens != nil || summary.Workload.InputResolvedTokens != nil {
+			return fmt.Errorf("prompt point contains token-length input evidence")
+		}
+	default:
+		return fmt.Errorf("experiment plan has invalid workload mode %q", plan.Base.Workload.Mode)
+	}
+	return nil
+}
+
+func validateChildSummary(stagingRoot, relativePath string, manifest Manifest, plan Plan, record PointRecord, expected aggregate.RunSummary) error {
 	childRoot := filepath.Join(stagingRoot, filepath.FromSlash(relativePath))
 	encodedMetadata, err := os.ReadFile(filepath.Join(childRoot, "run.json"))
 	if err != nil {
@@ -249,6 +324,9 @@ func validateChildSummary(stagingRoot, relativePath string, expected aggregate.R
 	}
 	if metadata.SchemaVersion != artifacts.SchemaVersion || metadata.RunID != expected.RunID || metadata.RunStatus != expected.RunStatus {
 		return fmt.Errorf("child run.json has inconsistent schema, identity, or status")
+	}
+	if err := validateExecutedPointMetadata(manifest, plan, record, metadata); err != nil {
+		return err
 	}
 	encodedJSON, err := os.ReadFile(filepath.Join(childRoot, "summary.json"))
 	if err != nil {
@@ -271,6 +349,44 @@ func validateChildSummary(stagingRoot, relativePath string, expected aggregate.R
 	}
 	if !bytes.Equal(actualCSV, wantCSV) {
 		return fmt.Errorf("child summary.csv differs from executor RunSummary")
+	}
+	return nil
+}
+
+func validateExecutedPointMetadata(manifest Manifest, plan Plan, record PointRecord, metadata artifacts.RunMetadata) error {
+	if config.LoadMode(metadata.Load.Mode) != manifest.LoadMode || config.LoadMode(metadata.Load.Mode) != plan.Base.Benchmark.Mode {
+		return fmt.Errorf("child run.json load mode does not match manifest and plan")
+	}
+	switch plan.Base.Benchmark.Mode {
+	case config.LoadModeClosedLoop:
+		if record.Parameters.Concurrency == nil || record.Parameters.RequestRate != nil || metadata.Load.ClosedLoop == nil || metadata.Load.OpenLoop != nil || metadata.Load.ClosedLoop.RequestedConcurrency != *record.Parameters.Concurrency {
+			return fmt.Errorf("child run.json closed-loop configuration does not match point")
+		}
+	case config.LoadModeOpenLoop:
+		if record.Parameters.RequestRate == nil || record.Parameters.Concurrency != nil || metadata.Load.OpenLoop == nil || metadata.Load.ClosedLoop != nil || metadata.Load.OpenLoop.RequestRate != *record.Parameters.RequestRate {
+			return fmt.Errorf("child run.json open-loop configuration does not match point")
+		}
+	default:
+		return fmt.Errorf("experiment plan has invalid load mode %q", plan.Base.Benchmark.Mode)
+	}
+
+	if config.WorkloadMode(metadata.Workload.Mode) != manifest.WorkloadMode || config.WorkloadMode(metadata.Workload.Mode) != plan.Base.Workload.Mode {
+		return fmt.Errorf("child run.json workload mode does not match manifest and plan")
+	}
+	if metadata.Workload.Output.RequestedMaxTokens != record.Parameters.RequestedOutputTokens {
+		return fmt.Errorf("child run.json requested output maximum does not match point")
+	}
+	switch plan.Base.Workload.Mode {
+	case config.WorkloadModeTokenLength:
+		if record.Parameters.InputTokens == nil || metadata.Workload.Input == nil || metadata.Workload.Input.TargetTokens != *record.Parameters.InputTokens || metadata.Workload.Input.ResolvedTokens != *record.Parameters.InputTokens {
+			return fmt.Errorf("child run.json token-length input does not match point")
+		}
+	case config.WorkloadModePrompt:
+		if record.Parameters.InputTokens != nil || metadata.Workload.Input != nil {
+			return fmt.Errorf("child run.json prompt workload contains token-length input evidence")
+		}
+	default:
+		return fmt.Errorf("experiment plan has invalid workload mode %q", plan.Base.Workload.Mode)
 	}
 	return nil
 }

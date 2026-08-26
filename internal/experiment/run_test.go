@@ -13,7 +13,9 @@ import (
 
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmarkexec"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/config"
 )
 
 func TestRunnerExecutesSequentiallyAndContinuesAfterChildFailure(t *testing.T) {
@@ -114,8 +116,8 @@ func TestRunnerCleansStagingWhenChildEvidenceIsMissing(t *testing.T) {
 	plan, _ := BuildPlan(base)
 	outputRoot := t.TempDir()
 	runner := deterministicRunner(func(_ context.Context, request benchmarkexec.Request) (benchmarkexec.Result, error) {
-		summary := aggregate.RunSummary{SchemaVersion: artifacts.SchemaVersion, RunID: "run-missing", RunStatus: artifacts.RunStatusCompleted}
-		return benchmarkexec.Result{Metadata: artifacts.RunMetadata{RunID: summary.RunID, RunStatus: summary.RunStatus}, Summary: summary}, nil
+		metadata, summary := fakeChildEvidence(request, "run-missing", artifacts.RunStatusCompleted)
+		return benchmarkexec.Result{Metadata: metadata, Summary: summary}, nil
 	})
 	if _, err := runner.Run(context.Background(), RunRequest{Plan: plan, OutputRoot: outputRoot}); err == nil {
 		t.Fatal("missing child evidence unexpectedly published")
@@ -160,13 +162,21 @@ func deterministicRunner(execute ExecuteFunc) *Runner {
 }
 
 func writeFakeChild(t *testing.T, request benchmarkexec.Request, runID, status string) benchmarkexec.Result {
+	return writeFakeChildWithMutation(t, request, runID, status, nil)
+}
+
+type fakeChildMutation func(*artifacts.RunMetadata, *aggregate.RunSummary)
+
+func writeFakeChildWithMutation(t *testing.T, request benchmarkexec.Request, runID, status string, mutate fakeChildMutation) benchmarkexec.Result {
 	t.Helper()
-	summary := aggregate.RunSummary{SchemaVersion: artifacts.SchemaVersion, RunID: runID, RunStatus: status}
+	metadata, summary := fakeChildEvidence(request, runID, status)
+	if mutate != nil {
+		mutate(&metadata, &summary)
+	}
 	root := filepath.Join(request.ArtifactRoot, runID)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	metadata := artifacts.RunMetadata{SchemaVersion: artifacts.SchemaVersion, RunID: runID, RunStatus: status}
 	encodedMetadata, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -191,4 +201,43 @@ func writeFakeChild(t *testing.T, request benchmarkexec.Request, runID, status s
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return benchmarkexec.Result{Metadata: metadata, Summary: summary, ArtifactPath: root}
+}
+
+func fakeChildEvidence(request benchmarkexec.Request, runID, status string) (artifacts.RunMetadata, aggregate.RunSummary) {
+	metadata := artifacts.RunMetadata{
+		SchemaVersion: artifacts.SchemaVersion,
+		RunID:         runID,
+		RunStatus:     status,
+		Workload: artifacts.WorkloadMetadata{
+			Mode:   string(request.Config.Workload.Mode),
+			Output: artifacts.WorkloadOutputMetadata{RequestedMaxTokens: request.Config.Request.MaxOutputTokens},
+		},
+		Load: artifacts.LoadMetadata{Mode: benchmark.LoadMode(request.Config.Benchmark.Mode)},
+	}
+	summary := aggregate.RunSummary{
+		SchemaVersion: artifacts.SchemaVersion,
+		RunID:         runID,
+		RunStatus:     status,
+		Workload: aggregate.WorkloadSummary{
+			Mode:                     string(request.Config.Workload.Mode),
+			RequestedOutputMaxTokens: request.Config.Request.MaxOutputTokens,
+		},
+		Load: aggregate.LoadSummary{Mode: benchmark.LoadMode(request.Config.Benchmark.Mode)},
+	}
+	if request.Config.Workload.Mode == config.WorkloadModeTokenLength {
+		inputTokens := request.Config.Workload.InputTokens
+		metadata.Workload.Input = &artifacts.WorkloadInputMetadata{TargetTokens: inputTokens, ResolvedTokens: inputTokens}
+		summary.Workload.InputTargetTokens = intPointer(inputTokens)
+		summary.Workload.InputResolvedTokens = intPointer(inputTokens)
+	}
+	switch request.Config.Benchmark.Mode {
+	case config.LoadModeClosedLoop:
+		metadata.Load.ClosedLoop = &artifacts.ClosedLoopLoadMetadata{RequestedConcurrency: request.Config.Benchmark.Concurrency}
+		summary.Load.ClosedLoop = &aggregate.ClosedLoopSummary{RequestedConcurrency: request.Config.Benchmark.Concurrency}
+	case config.LoadModeOpenLoop:
+		requestRate := request.Config.Benchmark.OpenLoop.RequestRate
+		metadata.Load.OpenLoop = &artifacts.OpenLoopLoadMetadata{RequestRate: requestRate}
+		summary.Load.OpenLoop = &aggregate.OpenLoopSummary{ConfiguredRequestRate: requestRate}
+	}
+	return metadata, summary
 }
