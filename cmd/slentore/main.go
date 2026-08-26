@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -16,10 +15,9 @@ import (
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/aggregate"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/artifacts"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmark"
+	"github.com/pillaiharish/llm-serving-performance-lab/internal/benchmarkexec"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/config"
 	"github.com/pillaiharish/llm-serving-performance-lab/internal/metrics"
-	"github.com/pillaiharish/llm-serving-performance-lab/internal/openai"
-	"github.com/pillaiharish/llm-serving-performance-lab/internal/workload"
 )
 
 var version = "devel"
@@ -280,192 +278,26 @@ func runBenchContext(ctx context.Context, args []string, stdout, stderr io.Write
 		*sloFlag.target = &duration
 	}
 	resolved.ApplyOverrides(overrides)
-	if err := resolved.Validate(); err != nil {
-		fmt.Fprintf(stderr, "error: invalid configuration: %v\n", err)
-		return 2
-	}
-
-	diagnostics := benchmark.CollectClientDiagnostics()
-	admission, err := benchmark.AdmitRun(benchmark.AdmissionRequest{
-		Mode:               benchmark.LoadMode(resolved.Benchmark.Mode),
-		Concurrency:        resolved.Benchmark.Concurrency,
-		Requests:           resolved.Benchmark.Requests,
-		WarmupRequests:     resolved.Benchmark.WarmupRequests,
-		RequestRate:        resolved.Benchmark.OpenLoop.RequestRate,
-		Duration:           resolved.Benchmark.OpenLoop.Duration,
-		MaxInFlight:        resolved.Benchmark.OpenLoop.MaxInFlight,
-		MaxConcurrency:     resolved.Benchmark.Safety.MaxConcurrency,
-		MaxRequests:        resolved.Benchmark.Safety.MaxRequests,
-		MaxRequestRate:     resolved.Benchmark.Safety.MaxRequestRate,
-		MaxInFlightCeiling: resolved.Benchmark.Safety.MaxInFlight,
-	}, diagnostics)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: client admission rejected: %v\n", err)
-		return 2
-	}
 	apiKey, err := config.ResolveAPIKey(resolved.Endpoint.APIKeyEnv, lookupEnv)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
-	httpClient, transport, err := newSharedHTTPClient(admission.TransportWorkerLimit)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: create shared HTTP client: %v\n", err)
-		return 2
-	}
-	defer transport.CloseIdleConnections()
-	prepared, err := prepareWorkload(ctx, resolved, httpClient, apiKey)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: prepare workload: %v\n", err)
-		return 1
-	}
-	runID, err := benchmark.NewRunID()
+	result, err := benchmarkexec.Execute(ctx, benchmarkexec.Request{
+		Config: resolved, APIKey: apiKey, ArtifactRoot: resolved.Capture.OutputDir, SlentoreVersion: slentoreVersion(),
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 2
-	}
-
-	client, err := openai.NewClientWithOptions(httpClient, resolved.Endpoint.BaseURL, apiKey, openai.ClientOptions{
-		TokenEvidenceMode: openai.TokenEvidenceMode(resolved.Benchmark.TokenTiming.Mode),
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "error: create OpenAI client: %v\n", err)
-		return 2
-	}
-	runner := benchmark.NewRunner(client)
-	requestTemplate := benchmark.Request{
-		RunID:           runID,
-		Model:           resolved.Endpoint.Model,
-		Prompt:          prepared.Prompt,
-		MaxOutputTokens: prepared.RequestedOutputTokens,
-		Temperature:     resolved.Request.Temperature,
-	}
-
-	createdAt := time.Now().UTC()
-	coordinator := benchmark.NewLifecycleCoordinator(runner)
-	lifecycleResult, runErr := coordinator.Run(ctx, benchmark.LifecyclePlan{
-		Mode:             admission.Mode,
-		RunID:            runID,
-		RequestTemplate:  requestTemplate,
-		Concurrency:      resolved.Benchmark.Concurrency,
-		WarmupRequests:   resolved.Benchmark.WarmupRequests,
-		MeasuredRequests: resolved.Benchmark.Requests,
-		RequestTimeout:   resolved.Runtime.Timeout,
-		DrainTimeout:     resolved.Runtime.DrainTimeout,
-		OpenLoop: benchmark.OpenLoopPlan{
-			RequestRate: resolved.Benchmark.OpenLoop.RequestRate,
-			Duration:    resolved.Benchmark.OpenLoop.Duration,
-			MaxInFlight: resolved.Benchmark.OpenLoop.MaxInFlight,
-		},
-	})
-	if lifecycleResult.StartedAt.IsZero() {
-		fmt.Fprintf(stderr, "error: coordinate benchmark run: %v\n", runErr)
-		return 1
-	}
-
-	requestArtifacts := lifecycleRequestArtifacts(lifecycleResult)
-	warmupMetadata := phaseMetadata(lifecycleResult.Warmup)
-	measurementMetadata := phaseMetadata(lifecycleResult.Measurement)
-
-	runStatus := artifacts.RunStatusCompleted
-	runError := ""
-	runErrorClass := ""
-	loadLimited := lifecycleResult.LoadMode == benchmark.LoadModeOpenLoop && !lifecycleResult.Drain.ParentCancelled && (lifecycleResult.Measurement.ArrivalCounts.ClientLimited > 0 || lifecycleResult.Measurement.ArrivalCounts.SchedulerLimited > 0)
-	if runErr != nil {
-		runStatus = artifacts.RunStatusFailed
-		if errors.Is(runErr, context.Canceled) || (lifecycleResult.Drain.ParentCancelled && !errors.Is(runErr, benchmark.ErrDrainTimeout)) {
-			runStatus = artifacts.RunStatusCancelled
+		if benchmarkexec.StageOf(err) == benchmarkexec.FailureStatic {
+			return 2
 		}
-		runError = runErr.Error()
-	} else if loadLimited {
-		runStatus = artifacts.RunStatusFailed
-		runError = benchmark.ErrLoadDelivery.Error()
-		runErrorClass = artifacts.ErrorClassLoadDelivery
-	} else if warmupMetadata.Failed > 0 {
-		runStatus = artifacts.RunStatusFailed
-		runError = fmt.Sprintf("%d of %d attempted warmup requests failed", warmupMetadata.Failed, warmupMetadata.Attempted)
-	} else if measurementMetadata.Failed > 0 {
-		runStatus = artifacts.RunStatusFailed
-		runError = fmt.Sprintf("%d of %d attempted measured requests failed", measurementMetadata.Failed, measurementMetadata.Attempted)
-	} else if lifecycleResult.LoadMode == benchmark.LoadModeClosedLoop && (warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested) {
-		runStatus = artifacts.RunStatusFailed
-		runError = "lifecycle did not attempt every requested warmup and measured request"
-	}
-	metadata := artifacts.RunMetadata{
-		SchemaVersion:   artifacts.SchemaVersion,
-		RunID:           runID,
-		SlentoreVersion: slentoreVersion(),
-		CreatedAt:       createdAt,
-		RunStatus:       runStatus,
-		Error:           runError,
-		ErrorClass:      runErrorClass,
-		Model:           resolved.Endpoint.Model,
-		BaseURL:         resolved.Endpoint.BaseURL,
-		Temperature:     resolved.Request.Temperature,
-		RequestTimeout:  resolved.Runtime.Timeout.String(),
-		Workload:        workloadMetadata(prepared),
-		TokenTiming:     tokenTimingMetadata(resolved.Benchmark.TokenTiming.Mode),
-		SLO:             aggregate.SLOConfigFromDurations(resolved.Benchmark.SLO.TTFT, resolved.Benchmark.SLO.TPOT, resolved.Benchmark.SLO.E2E),
-		SafetyLimits: artifacts.SafetyLimits{
-			MaxConcurrency:  resolved.Benchmark.Safety.MaxConcurrency,
-			MaxRequests:     resolved.Benchmark.Safety.MaxRequests,
-			MaxRequestRate:  resolved.Benchmark.Safety.MaxRequestRate,
-			MaxInFlight:     resolved.Benchmark.Safety.MaxInFlight,
-			MaxInputTokens:  resolved.Benchmark.Safety.MaxInputTokens,
-			MaxOutputTokens: resolved.Benchmark.Safety.MaxOutputTokens,
-		},
-		Load:              loadMetadata(resolved, admission.PlannedArrivals),
-		ClientDiagnostics: admission.Diagnostics,
-		Lifecycle: artifacts.LifecycleMetadata{
-			StartedAt:   lifecycleResult.StartedAt,
-			CompletedAt: lifecycleResult.CompletedAt,
-			ElapsedNS:   lifecycleResult.ElapsedNS,
-			Transitions: lifecycleResult.Transitions,
-		},
-		StopAdmission: stopAdmissionMetadata(lifecycleResult.Transitions),
-		Warmup:        warmupMetadata,
-		Measurement:   measurementMetadata,
-		Drain: artifacts.DrainMetadata{
-			StartedAt:           lifecycleResult.Drain.StartedAt,
-			CompletedAt:         lifecycleResult.Drain.CompletedAt,
-			ElapsedNS:           lifecycleResult.Drain.ElapsedNS,
-			Timeout:             lifecycleResult.Drain.Timeout.String(),
-			TimedOut:            lifecycleResult.Drain.TimedOut,
-			ParentCancelled:     lifecycleResult.Drain.ParentCancelled,
-			CancelledRequests:   len(lifecycleResult.Drain.CancelledRequestIDs),
-			CancelledRequestIDs: lifecycleResult.Drain.CancelledRequestIDs,
-		},
-	}
-
-	arrivals := lifecycleArrivals(lifecycleResult)
-	runSummary, summaryErr := artifacts.CalculateSummary(metadata, requestArtifacts, arrivals)
-	if summaryErr != nil {
-		fmt.Fprintf(stderr, "error: aggregate run summary: %v\n", summaryErr)
 		return 1
 	}
-	artifactPath, artifactErr := artifacts.NewWriter(resolved.Capture.OutputDir).WriteWithArrivals(metadata, requestArtifacts, arrivals)
-	printLifecycleSummary(stdout, metadata, runSummary, requestArtifacts, artifactPath)
-	if artifactErr != nil {
-		fmt.Fprintf(stderr, "error: write artifacts: %v\n", artifactErr)
-		return 1
-	}
-	if runErr != nil || loadLimited || warmupMetadata.Failed > 0 || measurementMetadata.Failed > 0 || (lifecycleResult.LoadMode == benchmark.LoadModeClosedLoop && (warmupMetadata.Attempted != warmupMetadata.Requested || measurementMetadata.Attempted != measurementMetadata.Requested)) {
+	printLifecycleSummary(stdout, result.Metadata, result.Summary, result.RequestArtifacts, result.ArtifactPath)
+	if !result.Successful() {
 		return 1
 	}
 	return 0
-}
-
-func stopAdmissionMetadata(transitions []benchmark.PhaseTransition) artifacts.StopAdmissionMetadata {
-	for _, transition := range transitions {
-		if transition.Phase == benchmark.PhaseStopAdmission {
-			return artifacts.StopAdmissionMetadata{
-				StoppedAt:      transition.EnteredAt,
-				StoppedAfterNS: transition.EnteredAfterNS,
-				Reason:         transition.Reason,
-			}
-		}
-	}
-	return artifacts.StopAdmissionMetadata{}
 }
 
 func slentoreVersion() string {
@@ -486,128 +318,6 @@ func printRootUsage(writer io.Writer) {
 func printBenchUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage: slentore bench [--config path] [overrides]")
 	fmt.Fprintln(writer, "Secrets are accepted only through --api-key-env.")
-}
-
-func phaseMetadata(result benchmark.PhaseResult) artifacts.PhaseMetadata {
-	attempted := len(result.Completed)
-	metadata := artifacts.PhaseMetadata{
-		Phase:                result.Phase,
-		Status:               result.Status,
-		StartedAt:            result.StartedAt,
-		CompletedAt:          result.CompletedAt,
-		ElapsedNS:            result.ElapsedNS,
-		Requested:            result.RequestedRequests,
-		Attempted:            attempted,
-		Completed:            attempted,
-		Successful:           result.Outcomes.Succeeded,
-		Failed:               result.Outcomes.Failed(),
-		RequestedConcurrency: result.RequestedConcurrency,
-		EffectiveWorkers:     result.WorkerCount,
-		MaxObservedActive:    result.MaxObservedActive,
-		Outcomes:             result.Outcomes,
-	}
-	if result.LoadMode == benchmark.LoadModeOpenLoop {
-		counts := result.ArrivalCounts
-		metadata.Arrivals = &counts
-		metadata.RequestedConcurrency = 0
-		metadata.EffectiveWorkers = 0
-		metadata.MaxObservedActive = 0
-	}
-	return metadata
-}
-
-func lifecycleRequestArtifacts(result benchmark.LifecycleResult) []artifacts.RequestArtifact {
-	requestArtifacts := make([]artifacts.RequestArtifact, 0, len(result.Warmup.Completed)+len(result.Measurement.Completed))
-	for _, phase := range [][]benchmark.CompletedRequest{result.Warmup.Completed, result.Measurement.Completed} {
-		for _, completed := range phase {
-			requestArtifacts = append(requestArtifacts, artifacts.RequestArtifact{
-				Sequence:    completed.Sequence,
-				Phase:       completed.Phase,
-				Outcome:     completed.Outcome,
-				Observation: completed.Result.Observation,
-				Metrics:     metrics.Calculate(completed.Result.Observation),
-			})
-		}
-	}
-	return requestArtifacts
-}
-
-func lifecycleArrivals(result benchmark.LifecycleResult) []benchmark.ArrivalRecord {
-	if result.LoadMode != benchmark.LoadModeOpenLoop {
-		return nil
-	}
-	arrivals := make([]benchmark.ArrivalRecord, 0, len(result.Warmup.Arrivals)+len(result.Measurement.Arrivals))
-	arrivals = append(arrivals, result.Warmup.Arrivals...)
-	arrivals = append(arrivals, result.Measurement.Arrivals...)
-	return arrivals
-}
-
-func loadMetadata(resolved config.Config, plannedArrivals int) artifacts.LoadMetadata {
-	if resolved.Benchmark.Mode == config.LoadModeOpenLoop {
-		return artifacts.LoadMetadata{
-			Mode: benchmark.LoadModeOpenLoop,
-			OpenLoop: &artifacts.OpenLoopLoadMetadata{
-				RequestRate:     resolved.Benchmark.OpenLoop.RequestRate,
-				Duration:        resolved.Benchmark.OpenLoop.Duration.String(),
-				MaxInFlight:     resolved.Benchmark.OpenLoop.MaxInFlight,
-				PlannedArrivals: plannedArrivals,
-			},
-		}
-	}
-	return artifacts.LoadMetadata{
-		Mode: benchmark.LoadModeClosedLoop,
-		ClosedLoop: &artifacts.ClosedLoopLoadMetadata{
-			RequestedConcurrency: resolved.Benchmark.Concurrency,
-			RequestedRequests:    resolved.Benchmark.Requests,
-		},
-	}
-}
-
-func prepareWorkload(ctx context.Context, resolved config.Config, httpClient *http.Client, apiKey string) (workload.PreparedWorkload, error) {
-	if resolved.Workload.Mode == config.WorkloadModePrompt {
-		return workload.PreparePrompt(resolved.Request.Prompt, resolved.Request.MaxOutputTokens), nil
-	}
-	prepareContext, cancel := context.WithTimeout(ctx, resolved.Runtime.Timeout)
-	defer cancel()
-	tokenizer, err := workload.NewVLLMTokenizer(httpClient, resolved.Workload.Tokenizer.URL, apiKey, resolved.Endpoint.Model)
-	if err != nil {
-		return workload.PreparedWorkload{}, err
-	}
-	if err := tokenizer.Initialize(prepareContext); err != nil {
-		return workload.PreparedWorkload{}, err
-	}
-	return workload.NewDeterministicBuilder(tokenizer).Build(prepareContext, workload.WorkloadSpec{
-		TargetInputTokens:     resolved.Workload.InputTokens,
-		RequestedOutputTokens: resolved.Request.MaxOutputTokens,
-		MaxInputTokens:        resolved.Benchmark.Safety.MaxInputTokens,
-	})
-}
-
-func workloadMetadata(prepared workload.PreparedWorkload) artifacts.WorkloadMetadata {
-	metadata := artifacts.WorkloadMetadata{
-		Mode:         prepared.Mode,
-		Output:       artifacts.WorkloadOutputMetadata{RequestedMaxTokens: prepared.RequestedOutputTokens},
-		Builder:      prepared.Builder,
-		PromptBytes:  prepared.PromptBytes,
-		PromptSHA256: prepared.PromptSHA256,
-		Tokenizer:    prepared.Tokenizer,
-	}
-	if prepared.Mode == workload.ModeTokenLength {
-		metadata.Input = &artifacts.WorkloadInputMetadata{
-			Contract:       prepared.InputContract,
-			TargetTokens:   prepared.TargetInputTokens,
-			ResolvedTokens: prepared.ResolvedInputTokens,
-		}
-	}
-	return metadata
-}
-
-func tokenTimingMetadata(mode config.TokenTimingMode) artifacts.TokenTimingMetadata {
-	metadata := artifacts.TokenTimingMetadata{Mode: string(mode)}
-	if mode == config.TokenTimingVLLM {
-		metadata.Source = benchmark.TokenTimingSourceVLLM
-	}
-	return metadata
 }
 
 func parseCLILoadMode(value string) (config.LoadMode, error) {
