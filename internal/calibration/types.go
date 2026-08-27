@@ -62,7 +62,7 @@ type Point struct {
 	SuccessfulRequestThroughput *aggregate.Rate              `json:"successful_request_throughput,omitempty"`
 	ClosedLoop                  *aggregate.ClosedLoopSummary `json:"closed_loop,omitempty"`
 	OpenLoop                    *aggregate.OpenLoopSummary   `json:"open_loop,omitempty"`
-	SchedulerLag                *aggregate.Distribution      `json:"scheduler_lag_p95_ms,omitempty"`
+	SchedulerLag                *aggregate.Distribution      `json:"scheduler_lag_ms,omitempty"`
 	Resource                    *ResourceEvidence            `json:"resource,omitempty"`
 }
 

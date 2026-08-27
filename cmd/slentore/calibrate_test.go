@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,6 +114,68 @@ func TestRunCalibrationRejectsInvalidModeAxisAndLagBeforeArtifacts(t *testing.T)
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
 		t.Fatalf("invalid calibration created artifacts: %v", err)
+	}
+}
+
+func TestCalibrationResourceEvidenceWithSeparateServerProcess(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestCalibrationFakeServerProcess$")
+	command.Env = append(os.Environ(), "SLENTORE_CALIBRATION_FAKE_HELPER=1")
+	stdoutPipe, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Stderr = os.Stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	address, err := bufio.NewReader(stdoutPipe).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read helper address: %v", err)
+	}
+	address = strings.TrimSpace(address)
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		t.Fatalf("helper address %q: %v", address, err)
+	}
+
+	output := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"calibrate-client", "--base-url", "http://" + address + "/v1", "--model", "fixture-model", "--mode", "closed-loop",
+		"--concurrency-values", "1,4", "--requests", "4", "--output-dir", output,
+	}, &stdout, &stderr, func(string) (string, bool) { return "", false })
+	if exit != 0 {
+		t.Fatalf("exit=%d stderr=%s", exit, stderr.String())
+	}
+	manifest := readCalibrationManifest(t, output)
+	for _, point := range manifest.Points {
+		if point.Resource == nil || point.Resource.GoroutinesStart <= 0 || point.Resource.HeapAllocStartBytes == 0 {
+			t.Fatalf("point resource = %+v", point.Resource)
+		}
+	}
+}
+
+func TestCalibrationFakeServerProcess(t *testing.T) {
+	if os.Getenv("SLENTORE_CALIBRATION_FAKE_HELPER") != "1" {
+		return
+	}
+	config := fakeserver.DefaultConfig()
+	config.Listen = "127.0.0.1:0"
+	config.HeaderDelay = 0
+	config.FirstContentDelay = 0
+	config.ChunkInterval = 0
+	config.UsageDelay = 0
+	config.DoneDelay = 0
+	listener, err := net.Listen("tcp", config.Listen)
+	if err != nil {
+		os.Exit(3)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, listener.Addr().String())
+	if err := fakeserver.Serve(context.Background(), listener, config); err != nil {
+		os.Exit(4)
 	}
 }
 

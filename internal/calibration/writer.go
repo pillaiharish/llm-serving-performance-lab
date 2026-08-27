@@ -37,6 +37,9 @@ func (w *Writer) Write(manifest Manifest) (string, error) {
 	if err := validateManifest(manifest); err != nil {
 		return "", fmt.Errorf("validate calibration artifact: %w", err)
 	}
+	if _, err := os.Stat(filepath.Join(w.outputRoot, filepath.FromSlash(manifest.ExperimentPath), "experiment.json")); err != nil {
+		return "", fmt.Errorf("calibration experiment artifact is unavailable: %w", err)
+	}
 	root := filepath.Join(w.outputRoot, "calibrations")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("create calibration artifact root: %w", err)
@@ -157,6 +160,11 @@ func validateManifest(manifest Manifest) error {
 			}
 		} else if point.Counts == nil || point.RunStatus == nil || point.Resource == nil {
 			return fmt.Errorf("evaluated point %d lacks result or resource evidence", point.PointIndex)
+		}
+		if point.ChildRunPath != nil {
+			if point.ChildRunID == nil || *point.ChildRunPath != filepath.ToSlash(filepath.Join("experiments", manifest.ExperimentID, "runs", *point.ChildRunID)) {
+				return fmt.Errorf("point %d has invalid child identity or path", point.PointIndex)
+			}
 		}
 		if point.Resource != nil {
 			resource := point.Resource

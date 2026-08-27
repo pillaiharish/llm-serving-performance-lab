@@ -19,7 +19,7 @@ EXPERIMENT_SCHEMA = 1
 VERIFICATION_SCHEMA = 1
 ITL_SOURCE = "vllm_return_token_ids_client_receive"
 PROMPT_SENTINEL = "Slentore V1 acceptance sentinel."
-TOKEN_SENTINELS = ("987654300", "987654301", "987654321", "987654322")
+TOKEN_SENTINELS = ("987654300", "987654301", "987654321", "987654322", "987654323", "987654324")
 RAW_KEYS = {"messages", "choices", "delta", "prompt_token_ids", "token_ids"}
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._/-]+$")
 
@@ -172,12 +172,20 @@ class Audit:
             intervals = aggregate_itl.get("intervals_ms") or {}
             if intervals.get("sample_count") != available_counts:
                 self.error(f"{run_dir}: aggregate ITL sample count is inconsistent")
+        else:
+            intervals = aggregate_itl.get("intervals_ms") or {}
+            if aggregate_itl.get("unavailable_requests") != len(metrics_files) or not intervals.get("reason"):
+                self.error(f"{run_dir}: aggregate unavailable ITL evidence is incomplete")
 
     def verify_slo(self, run_dir: Path, summary: dict[str, Any]) -> None:
         slo = summary.get("slo") or {}
         if not slo.get("configured") or not all(slo.get(name) for name in ("ttft", "tpot", "e2e")):
             self.error(f"{run_dir}: SLO/goodput path was not configured")
             return
+        expected_thresholds = {"ttft": 10000.0, "tpot": 1000.0, "e2e": 60000.0}
+        for name, expected in expected_thresholds.items():
+            if (slo.get(name) or {}).get("threshold_ms") != expected:
+                self.error(f"{run_dir}: {name} acceptance threshold is not {expected} ms")
         successful = slo.get("successful_requests", 0)
         evaluable = slo.get("evaluable_requests", 0)
         good = slo.get("good_requests", 0)

@@ -183,6 +183,10 @@ ACCEPTANCE_BASIC_EXIT="$basic_exit" \
 ACCEPTANCE_CLOSED_EXIT="$closed_exit" \
 ACCEPTANCE_OPEN_EXIT="$open_exit" \
 ACCEPTANCE_TOKEN_EXIT="$token_exit" \
+ACCEPTANCE_BASIC_SETTINGS="$basic_requests,$basic_warmup,$basic_output" \
+ACCEPTANCE_CLOSED_SETTINGS="$closed_values|$closed_requests|$closed_warmup" \
+ACCEPTANCE_OPEN_SETTINGS="$open_values|$open_duration|$open_in_flight|$open_warmup" \
+ACCEPTANCE_TOKEN_SETTINGS="$token_inputs|$token_outputs|$token_requests|$token_warmup" \
 python3 - <<'PY'
 import datetime, json, os, pathlib
 root = pathlib.Path(os.environ["ACCEPTANCE_DIR"])
@@ -197,10 +201,10 @@ payload = {
     "tokenizer_url": os.environ["ACCEPTANCE_TOKENIZER_URL"],
     "api_key_env": os.environ["ACCEPTANCE_API_KEY_ENV"],
     "scenarios": {
-        "basic": {"path": "basic", "cli_exit": int(os.environ["ACCEPTANCE_BASIC_EXIT"])},
-        "closed_loop": {"path": "closed-loop", "cli_exit": int(os.environ["ACCEPTANCE_CLOSED_EXIT"])},
-        "open_loop": {"path": "open-loop", "cli_exit": int(os.environ["ACCEPTANCE_OPEN_EXIT"])},
-        "token_length": {"path": "token-length", "cli_exit": int(os.environ["ACCEPTANCE_TOKEN_EXIT"])},
+        "basic": {"path": "basic", "cli_exit": int(os.environ["ACCEPTANCE_BASIC_EXIT"]), "settings": os.environ["ACCEPTANCE_BASIC_SETTINGS"]},
+        "closed_loop": {"path": "closed-loop", "cli_exit": int(os.environ["ACCEPTANCE_CLOSED_EXIT"]), "settings": os.environ["ACCEPTANCE_CLOSED_SETTINGS"]},
+        "open_loop": {"path": "open-loop", "cli_exit": int(os.environ["ACCEPTANCE_OPEN_EXIT"]), "settings": os.environ["ACCEPTANCE_OPEN_SETTINGS"]},
+        "token_length": {"path": "token-length", "cli_exit": int(os.environ["ACCEPTANCE_TOKEN_EXIT"]), "settings": os.environ["ACCEPTANCE_TOKEN_SETTINGS"]},
     },
 }
 temporary = root / ".acceptance.json.tmp"
