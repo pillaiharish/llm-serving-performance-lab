@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.22.x", "1.25.5"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [[ -n "$unformatted" ]]; then
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build commands
+        run: |
+          go build -o "$RUNNER_TEMP/slentore" ./cmd/slentore
+          go build -o "$RUNNER_TEMP/slentore-fake-server" ./cmd/slentore-fake-server
+      - name: Verify module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  race:
+    name: Race
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.5"
+          cache: true
+      - run: go test -race ./...
+
+  client-calibration-smoke:
+    name: Client calibration smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.5"
+          cache: true
+      - name: Build commands
+        run: |
+          go build -o "$RUNNER_TEMP/slentore" ./cmd/slentore
+          go build -o "$RUNNER_TEMP/slentore-fake-server" ./cmd/slentore-fake-server
+      - name: Run separate-process calibration smoke
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          fake_log="$RUNNER_TEMP/fake-server.log"
+          "$RUNNER_TEMP/slentore-fake-server" \
+            --listen 127.0.0.1:0 \
+            --header-delay 0 \
+            --first-content-delay 0 \
+            --chunk-interval 0 \
+            --usage-delay 0 \
+            --done-delay 0 \
+            >"$fake_log" 2>&1 &
+          fake_pid=$!
+          trap 'kill "$fake_pid" 2>/dev/null || true; wait "$fake_pid" 2>/dev/null || true' EXIT
+
+          address=""
+          for _ in $(seq 1 200); do
+            address=$(awk '/^listen:/{print $2; exit}' "$fake_log" 2>/dev/null || true)
+            if [[ -n "$address" ]]; then
+              if python3 - "$address" <<'PY'
+          import socket, sys
+          host, port = sys.argv[1].rsplit(":", 1)
+          with socket.create_connection((host, int(port)), timeout=0.2):
+              pass
+          PY
+              then
+                break
+              fi
+            fi
+            sleep 0.025
+          done
+          [[ -n "$address" ]]
+
+          artifact_root="$RUNNER_TEMP/calibration-artifacts"
+          "$RUNNER_TEMP/slentore" calibrate-client \
+            --base-url "http://$address/v1" \
+            --model fixture-model \
+            --mode closed-loop \
+            --concurrency-values 1,4,16 \
+            --requests 16 \
+            --output-dir "$artifact_root"
+          "$RUNNER_TEMP/slentore" calibrate-client \
+            --base-url "http://$address/v1" \
+            --model fixture-model \
+            --mode open-loop \
+            --request-rate-values 10,25,50 \
+            --duration 500ms \
+            --max-in-flight 64 \
+            --output-dir "$artifact_root"
+
+          [[ $(find "$artifact_root/calibrations" -mindepth 2 -maxdepth 2 -name calibration.json | wc -l) -eq 2 ]]
+          [[ $(find "$artifact_root/calibrations" -mindepth 2 -maxdepth 2 -name summary.csv | wc -l) -eq 2 ]]
+          [[ $(find "$artifact_root/experiments" -mindepth 2 -maxdepth 2 -name experiment.json | wc -l) -eq 2 ]]
+
+  v1-acceptance-fixture:
+    name: V1 acceptance fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25.5"
+          cache: true
+      - name: Test offline verifier
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      - name: Run full fixture acceptance
+        env:
+          SLENTORE_ACCEPTANCE_DIR: ${{ runner.temp }}/v1-acceptance-fixture
+        run: scripts/v1_acceptance.sh --fixture

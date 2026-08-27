@@ -172,8 +172,8 @@ func validateListenAddress(address string) error {
 		return fmt.Errorf("host is required")
 	}
 	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("port must be an integer from 1 through 65535")
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("port must be an integer from 0 through 65535")
 	}
 	return nil
 }

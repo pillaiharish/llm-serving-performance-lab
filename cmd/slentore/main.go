@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"syscall"
 
@@ -20,6 +21,7 @@ import (
 )
 
 var version = "devel"
+var revision = "unknown"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -42,6 +44,17 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, lo
 	}
 	if args[0] == "sweep" {
 		return runSweepContext(ctx, args[1:], stdout, stderr, lookupEnv)
+	}
+	if args[0] == "calibrate-client" {
+		return runCalibrationContext(ctx, args[1:], stdout, stderr, lookupEnv)
+	}
+	if args[0] == "version" {
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "error: version does not accept arguments\n")
+			return 2
+		}
+		printVersion(stdout)
+		return 0
 	}
 	if args[0] != "bench" {
 		fmt.Fprintf(stderr, "error: unknown command %q\n", args[0])
@@ -114,9 +127,40 @@ func slentoreVersion() string {
 	return "devel"
 }
 
+func slentoreRevision() string {
+	if revision != "" && revision != "unknown" {
+		return revision
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		value := ""
+		modified := false
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				value = setting.Value
+			case "vcs.modified":
+				modified = setting.Value == "true"
+			}
+		}
+		if value != "" {
+			if modified {
+				return value + "+dirty"
+			}
+			return value
+		}
+	}
+	return "unknown"
+}
+
+func printVersion(writer io.Writer) {
+	fmt.Fprintf(writer, "version: %s\n", slentoreVersion())
+	fmt.Fprintf(writer, "revision: %s\n", slentoreRevision())
+	fmt.Fprintf(writer, "go: %s\n", runtime.Version())
+}
+
 func printRootUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "Usage: slentore <bench|sweep> [options]")
-	fmt.Fprintln(writer, "Run one benchmark or a sequential deterministic experiment sweep.")
+	fmt.Fprintln(writer, "Usage: slentore <bench|sweep|calibrate-client|version> [options]")
+	fmt.Fprintln(writer, "Run a benchmark, experiment sweep, or empirical client-delivery calibration.")
 }
 
 func printBenchUsage(writer io.Writer) {

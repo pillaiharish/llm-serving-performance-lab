@@ -9,11 +9,31 @@ opt-in, evidence-backed vLLM token-arrival timing. It provides two explicit load
 models: fixed-concurrency closed-loop work and wall-clock open-loop request-rate
 scheduling. One invocation runs an optional request-count warmup followed by one measured
 cohort and writes exact run-level latency, throughput, delivery, token, and
-optional SLO/goodput summaries. Duration-based warmup, load sweeps, deployment,
-and observability remain outside this version.
+optional SLO/goodput summaries. Duration-based warmup, deployment automation,
+and server-side observability remain outside this
+version. Explicit deterministic load/token sweeps and client-delivery
+calibration are supported.
 
 The original local single-GPU learning series remains unchanged under
 [`experiments/local-single-gpu-v0/`](experiments/local-single-gpu-v0/).
+
+## V1 workflow
+
+1. Start an OpenAI-compatible endpoint.
+2. Optionally verify the client process at explicitly tested loads with
+   `slentore calibrate-client`; see
+   [`docs/client-calibration.md`](docs/client-calibration.md).
+3. Run one workload with `slentore bench` or an ordered matrix with
+   `slentore sweep`.
+4. Inspect the canonical `summary.json`/`summary.csv` and, for sweeps, the
+   experiment summary.
+5. Before making a V1 release claim, complete the separate real-vLLM gate in
+   [`docs/v1-release-checklist.md`](docs/v1-release-checklist.md).
+
+The existing
+[`docs/deployments/vast-ai-a5000-vllm.md`](docs/deployments/vast-ai-a5000-vllm.md)
+describes one manually managed endpoint environment. Slentore does not
+provision it.
 
 ## Build
 
@@ -23,6 +43,9 @@ Slentore requires Go 1.22 or newer.
 go build -o build/slentore ./cmd/slentore
 go build -o build/slentore-fake-server ./cmd/slentore-fake-server
 ```
+
+`build/slentore version` reports the semantic version (or development build
+identity), source revision when available, and Go runtime version.
 
 The only non-standard-library dependency is `go.yaml.in/yaml/v3`, used for
 strict YAML configuration parsing.
@@ -935,13 +958,20 @@ go build ./cmd/slentore-fake-server
 go test -race ./...
 ```
 
+GitHub CI proves both the declared Go 1.22 minimum and the Go 1.25.5 release
+development toolchain, runs the race detector, and exercises separate-process
+calibration plus the complete offline V1 acceptance fixture. Real-vLLM
+acceptance remains a separate release gate because normal CI requires no GPU,
+secret, or external endpoint.
+
 ## Current scope
 
 This version can run one optional request-count warmup and one measured closed-
-or open-loop cohort directly, or orchestrate explicit load/token axes as a
-sequential experiment of independent runs. It contains no warmup-duration
-control, adaptive search, repetitions, database, client-capacity calibration,
-GPU discovery, deployment automation, or observability integration. The
+or open-loop cohort directly, orchestrate explicit load/token axes as a
+sequential experiment of independent runs, and collect empirical client
+delivery evidence for explicit load points. It contains no warmup-duration
+control, adaptive search, repetitions, database, GPU discovery, deployment
+automation, distributed load generation, or observability integration. The
 lifecycle coordinator reuses the existing
 `Runner.RunRequest` primitive
 without changing how an individual request is observed or how its metrics are
