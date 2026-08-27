@@ -28,7 +28,6 @@ func TestConfigValidation(t *testing.T) {
 		{name: "missing listen", alter: func(c *Config) { c.Listen = "" }, wantError: "listen address"},
 		{name: "missing port", alter: func(c *Config) { c.Listen = "127.0.0.1" }, wantError: "host:port"},
 		{name: "missing host", alter: func(c *Config) { c.Listen = ":18080" }, wantError: "host is required"},
-		{name: "zero port", alter: func(c *Config) { c.Listen = "127.0.0.1:0" }, wantError: "port must"},
 		{name: "invalid port", alter: func(c *Config) { c.Listen = "127.0.0.1:not-a-port" }, wantError: "port must"},
 		{name: "unknown mode", alter: func(c *Config) { c.Mode = "unknown" }, wantError: "mode must"},
 		{name: "unknown token evidence", alter: func(c *Config) { c.TokenEvidence = "unknown" }, wantError: "token evidence"},
@@ -60,6 +59,7 @@ func TestConfigAcceptsTokenEvidenceFixtures(t *testing.T) {
 	for _, mode := range []TokenEvidenceMode{TokenEvidenceDisabled, TokenEvidenceSingleton, TokenEvidenceBatched, TokenEvidenceMissing, TokenEvidenceMismatch} {
 		t.Run(string(mode), func(t *testing.T) {
 			config := DefaultConfig()
+			config.Listen = "127.0.0.1:0"
 			config.TokenEvidence = mode
 			if err := config.Validate(); err != nil {
 				t.Fatalf("Validate: %v", err)
