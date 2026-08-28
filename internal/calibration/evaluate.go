@@ -8,7 +8,14 @@ import (
 )
 
 func Evaluate(result benchmarkexec.Result, maxSchedulerLagP95MS *float64) (bool, []string) {
-	summary := result.Summary
+	return EvaluateEvidence(result.Summary, result.Metadata, maxSchedulerLagP95MS)
+}
+
+// EvaluateEvidence applies the calibration delivery contract to the persisted
+// schema-7 evidence used to publish a calibration point. Keeping this function
+// independent of benchmarkexec.Result lets Writer defensively repeat the same
+// evaluation after loading the referenced child artifacts.
+func EvaluateEvidence(summary aggregate.RunSummary, metadata artifacts.RunMetadata, maxSchedulerLagP95MS *float64) (bool, []string) {
 	reasons := make([]string, 0)
 	if summary.RunStatus != artifacts.RunStatusCompleted || !summary.Complete {
 		reasons = append(reasons, ReasonRunNotCompleted)
@@ -19,7 +26,7 @@ func Evaluate(result benchmarkexec.Result, maxSchedulerLagP95MS *float64) (bool,
 
 	switch config.LoadMode(summary.Load.Mode) {
 	case config.LoadModeClosedLoop:
-		if summary.Counts.RequestedOrPlanned != result.Metadata.Measurement.Attempted || summary.Counts.RequestedOrPlanned != summary.Counts.Completed || summary.Counts.RequestedOrPlanned != summary.Counts.Successful {
+		if summary.Counts.RequestedOrPlanned != metadata.Measurement.Attempted || summary.Counts.RequestedOrPlanned != summary.Counts.Completed || summary.Counts.RequestedOrPlanned != summary.Counts.Successful {
 			reasons = append(reasons, ReasonRequestsNotFullyAttempted)
 		}
 	case config.LoadModeOpenLoop:
@@ -54,6 +61,24 @@ func Evaluate(result benchmarkexec.Result, maxSchedulerLagP95MS *float64) (bool,
 		reasons = append(reasons, ReasonRunNotCompleted)
 	}
 	return len(reasons) == 0, reasons
+}
+
+func knownDeliveryReason(reason string) bool {
+	switch reason {
+	case ReasonRunNotCompleted,
+		ReasonRequestsNotFullyAttempted,
+		ReasonRequestFailuresPresent,
+		ReasonPlannedArrivalsNotProcessed,
+		ReasonDeliveryRatioBelowOne,
+		ReasonClientLimited,
+		ReasonSchedulerLimited,
+		ReasonCancellationUnprocessed,
+		ReasonSchedulerLagUnavailable,
+		ReasonSchedulerLagExceeded:
+		return true
+	default:
+		return false
+	}
 }
 
 func pointFromResult(record experimentPoint, result benchmarkexec.Result, resource ResourceEvidence, experimentID string, maxSchedulerLagP95MS *float64) Point {

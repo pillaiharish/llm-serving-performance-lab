@@ -183,13 +183,30 @@ ACCEPTANCE_BASIC_EXIT="$basic_exit" \
 ACCEPTANCE_CLOSED_EXIT="$closed_exit" \
 ACCEPTANCE_OPEN_EXIT="$open_exit" \
 ACCEPTANCE_TOKEN_EXIT="$token_exit" \
-ACCEPTANCE_BASIC_SETTINGS="$basic_requests,$basic_warmup,$basic_output" \
-ACCEPTANCE_CLOSED_SETTINGS="$closed_values|$closed_requests|$closed_warmup" \
-ACCEPTANCE_OPEN_SETTINGS="$open_values|$open_duration|$open_in_flight|$open_warmup" \
-ACCEPTANCE_TOKEN_SETTINGS="$token_inputs|$token_outputs|$token_requests|$token_warmup" \
+ACCEPTANCE_BASIC_REQUESTS="$basic_requests" \
+ACCEPTANCE_BASIC_WARMUP="$basic_warmup" \
+ACCEPTANCE_BASIC_OUTPUT="$basic_output" \
+ACCEPTANCE_CLOSED_VALUES="$closed_values" \
+ACCEPTANCE_CLOSED_REQUESTS="$closed_requests" \
+ACCEPTANCE_CLOSED_WARMUP="$closed_warmup" \
+ACCEPTANCE_OPEN_VALUES="$open_values" \
+ACCEPTANCE_OPEN_DURATION="$open_duration" \
+ACCEPTANCE_OPEN_IN_FLIGHT="$open_in_flight" \
+ACCEPTANCE_OPEN_WARMUP="$open_warmup" \
+ACCEPTANCE_TOKEN_INPUTS="$token_inputs" \
+ACCEPTANCE_TOKEN_OUTPUTS="$token_outputs" \
+ACCEPTANCE_TOKEN_REQUESTS="$token_requests" \
+ACCEPTANCE_TOKEN_WARMUP="$token_warmup" \
 python3 - <<'PY'
 import datetime, json, os, pathlib
 root = pathlib.Path(os.environ["ACCEPTANCE_DIR"])
+
+def integer_list(name):
+    return [int(value) for value in os.environ[name].split(",")]
+
+def number_list(name):
+    return [float(value) for value in os.environ[name].split(",")]
+
 payload = {
     "acceptance_schema_version": 1,
     "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -201,10 +218,46 @@ payload = {
     "tokenizer_url": os.environ["ACCEPTANCE_TOKENIZER_URL"],
     "api_key_env": os.environ["ACCEPTANCE_API_KEY_ENV"],
     "scenarios": {
-        "basic": {"path": "basic", "cli_exit": int(os.environ["ACCEPTANCE_BASIC_EXIT"]), "settings": os.environ["ACCEPTANCE_BASIC_SETTINGS"]},
-        "closed_loop": {"path": "closed-loop", "cli_exit": int(os.environ["ACCEPTANCE_CLOSED_EXIT"]), "settings": os.environ["ACCEPTANCE_CLOSED_SETTINGS"]},
-        "open_loop": {"path": "open-loop", "cli_exit": int(os.environ["ACCEPTANCE_OPEN_EXIT"]), "settings": os.environ["ACCEPTANCE_OPEN_SETTINGS"]},
-        "token_length": {"path": "token-length", "cli_exit": int(os.environ["ACCEPTANCE_TOKEN_EXIT"]), "settings": os.environ["ACCEPTANCE_TOKEN_SETTINGS"]},
+        "basic": {
+            "path": "basic",
+            "cli_exit": int(os.environ["ACCEPTANCE_BASIC_EXIT"]),
+            "settings": {
+                "concurrency": 1,
+                "requests": int(os.environ["ACCEPTANCE_BASIC_REQUESTS"]),
+                "warmup_requests": int(os.environ["ACCEPTANCE_BASIC_WARMUP"]),
+                "max_output_tokens": int(os.environ["ACCEPTANCE_BASIC_OUTPUT"]),
+            },
+        },
+        "closed_loop": {
+            "path": "closed-loop",
+            "cli_exit": int(os.environ["ACCEPTANCE_CLOSED_EXIT"]),
+            "settings": {
+                "concurrency_values": integer_list("ACCEPTANCE_CLOSED_VALUES"),
+                "requests": int(os.environ["ACCEPTANCE_CLOSED_REQUESTS"]),
+                "warmup_requests": int(os.environ["ACCEPTANCE_CLOSED_WARMUP"]),
+            },
+        },
+        "open_loop": {
+            "path": "open-loop",
+            "cli_exit": int(os.environ["ACCEPTANCE_OPEN_EXIT"]),
+            "settings": {
+                "request_rate_values": number_list("ACCEPTANCE_OPEN_VALUES"),
+                "duration": os.environ["ACCEPTANCE_OPEN_DURATION"],
+                "max_in_flight": int(os.environ["ACCEPTANCE_OPEN_IN_FLIGHT"]),
+                "warmup_requests": int(os.environ["ACCEPTANCE_OPEN_WARMUP"]),
+            },
+        },
+        "token_length": {
+            "path": "token-length",
+            "cli_exit": int(os.environ["ACCEPTANCE_TOKEN_EXIT"]),
+            "settings": {
+                "input_token_values": integer_list("ACCEPTANCE_TOKEN_INPUTS"),
+                "output_token_values": integer_list("ACCEPTANCE_TOKEN_OUTPUTS"),
+                "concurrency": 1,
+                "requests": int(os.environ["ACCEPTANCE_TOKEN_REQUESTS"]),
+                "warmup_requests": int(os.environ["ACCEPTANCE_TOKEN_WARMUP"]),
+            },
+        },
     },
 }
 temporary = root / ".acceptance.json.tmp"
