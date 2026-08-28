@@ -19,8 +19,12 @@ The artifact consistency gate is already anchored by focused regression tests:
 artifact writer tests recalculate `RequestMetrics` from observations and the
 canonical `RunSummary`/JSON/CSV; experiment writer tests validate plan-to-point,
 point-to-child metadata/summary, and child-summary-to-experiment-row identity.
-Calibration writer and V1 verifier tests extend this chain without duplicating
-the complete writers.
+Calibration publication also reloads its referenced experiment and schema-7
+child summaries to prove report-to-point, counts, load evidence, scheduler lag,
+throughput, and delivery classification identity. The V1 acceptance verifier
+proves the recorded typed scenario configuration against the exact experiment
+axes and ordered child-run configuration. These checks extend the evidence
+chain without duplicating the complete artifact and experiment writers.
 
 The repository currently has no branch protection. After PR #22 is merged,
 make the five CI checks above required for `main`. Do not change repository
