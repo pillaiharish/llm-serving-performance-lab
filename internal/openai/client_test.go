@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -503,4 +504,114 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+func TestClientFirstByteObservationIsRaceFreeUnderConcurrency(t *testing.T) {
+	const workers = 50
+	fixture := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\n" +
+		"data: [DONE]\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		// Flush headers so the transport's reader goroutine receives the first
+		// response byte and fires GotFirstResponseByte on a separate goroutine
+		// while Execute is still blocked in httpClient.Do.
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(2 * time.Millisecond)
+		_, _ = io.WriteString(writer, fixture)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	observations := make([]benchmark.RequestObservation, workers)
+	start := make(chan struct{})
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		observations[i] = newObservation()
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs <- client.Execute(context.Background(), benchmark.Request{
+				RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+			}, &observations[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	completed := 0
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Execute returned error under concurrency: %v", err)
+		}
+		completed++
+	}
+	if completed != workers {
+		t.Fatalf("completed = %d, want %d", completed, workers)
+	}
+	for i := range observations {
+		if observations[i].FirstByteAt == nil || observations[i].FirstByteAfterNS == nil {
+			t.Fatalf("observation %d missing first-byte timestamp: %+v", i, observations[i])
+		}
+		if observations[i].FirstByteAfterNS != nil && *observations[i].FirstByteAfterNS < 0 {
+			t.Fatalf("observation %d has negative first-byte offset: %d", i, *observations[i].FirstByteAfterNS)
+		}
+	}
+}
+
+func TestClientFirstByteObservationCapturedOnCancelledRequest(t *testing.T) {
+	const workers = 25
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		// Hold the response body open so the transport fires GotFirstResponseByte
+		// (headers flushed) but the request is cancelled before the body completes.
+		select {
+		case <-request.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		observation := newObservation()
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			defer wg.Done()
+			defer cancel()
+			<-start
+			_ = client.Execute(ctx, benchmark.Request{
+				RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+			}, &observation)
+		}()
+	}
+	close(start)
+
+	// Cancel all in-flight requests shortly after they start, racing the
+	// GotFirstResponseByte callback against Execute's deferred cleanup.
+	time.Sleep(10 * time.Millisecond)
+	wg.Wait()
+
+	// The test passes if no race is detected; the cancelled requests may or may
+	// not have received a first byte, but Execute must not race on the
+	// observation struct.
 }

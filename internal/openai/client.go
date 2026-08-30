@@ -111,23 +111,30 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 		httpRequest.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	var timestampMu sync.Mutex
+	// RequestStartedAt is captured before the HTTP round trip begins so the
+	// measured interval starts immediately before the request is sent. The
+	// httptrace callback captures the first-byte timestamp into closure-locals
+	// only and the Execute goroutine merges it into the observation after the
+	// round trip returns, so the observation struct has a single writer (this
+	// goroutine) for every field.
+	started := c.now()
+	observation.RequestStartedAt = &started
+
+	var firstByteAt time.Time
+	var haveFirstByte bool
+	var firstByteMu sync.Mutex
 	trace := &httptrace.ClientTrace{
 		GotFirstResponseByte: func() {
-			timestampMu.Lock()
-			defer timestampMu.Unlock()
-			if observation.FirstByteAt == nil && observation.RequestStartedAt != nil {
-				observed := c.now()
-				offset := observed.Sub(*observation.RequestStartedAt).Nanoseconds()
-				observation.FirstByteAt = &observed
-				observation.FirstByteAfterNS = &offset
+			firstByteMu.Lock()
+			defer firstByteMu.Unlock()
+			if !haveFirstByte {
+				firstByteAt = c.now()
+				haveFirstByte = true
 			}
 		},
 	}
 	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(httpRequest.Context(), trace))
 
-	started := c.now()
-	observation.RequestStartedAt = &started
 	defer func() {
 		completed := c.now()
 		observation.CompletedAt = &completed
@@ -139,11 +146,27 @@ func (c *Client) Execute(ctx context.Context, request benchmark.Request, observa
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
+		firstByteMu.Lock()
+		if haveFirstByte && observation.FirstByteAt == nil {
+			observed := firstByteAt
+			offset := observed.Sub(started).Nanoseconds()
+			observation.FirstByteAt = &observed
+			observation.FirstByteAfterNS = &offset
+		}
+		firstByteMu.Unlock()
 		return fmt.Errorf("send chat completion request: %w", err)
 	}
+	firstByteMu.Lock()
+	if haveFirstByte && observation.FirstByteAt == nil {
+		observed := firstByteAt
+		offset := observed.Sub(started).Nanoseconds()
+		observation.FirstByteAt = &observed
+		observation.FirstByteAfterNS = &offset
+	}
+	firstByteMu.Unlock()
 	headersReceived := c.now()
 	observation.HeadersReceivedAt = &headersReceived
-	headersOffset := headersReceived.Sub(*observation.RequestStartedAt).Nanoseconds()
+	headersOffset := headersReceived.Sub(started).Nanoseconds()
 	observation.HeadersAfterNS = &headersOffset
 	observation.StatusCode = response.StatusCode
 
