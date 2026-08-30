@@ -1,0 +1,42 @@
+{
+  "artifacts_valid": true,
+  "acceptance_passed": true,
+  "errors": [],
+  "benchmark_failures": [],
+  "scenarios": {
+    "basic": {
+      "run_id": "20260830T111921Z-f6438ed2",
+      "run_status": "completed",
+      "path": "basic/20260830T111921Z-f6438ed2",
+      "expected_children": 1,
+      "verified_children": 1
+    },
+    "closed_loop": {
+      "path": "closed-loop/experiments/20260830T111926Z-exp-d5ccf623",
+      "expected_children": 3,
+      "verified_children": 3,
+      "experiment_id": "20260830T111926Z-exp-d5ccf623",
+      "status": "completed",
+      "complete": true,
+      "planned_points": 3
+    },
+    "open_loop": {
+      "path": "open-loop/experiments/20260830T111946Z-exp-ff009636",
+      "expected_children": 3,
+      "verified_children": 3,
+      "experiment_id": "20260830T111946Z-exp-ff009636",
+      "status": "completed",
+      "complete": true,
+      "planned_points": 3
+    },
+    "token_length": {
+      "path": "token-length/experiments/20260830T111957Z-exp-1c30f54c",
+      "expected_children": 4,
+      "verified_children": 4,
+      "experiment_id": "20260830T111957Z-exp-1c30f54c",
+      "status": "completed",
+      "complete": true,
+      "planned_points": 4
+    }
+  }
+}

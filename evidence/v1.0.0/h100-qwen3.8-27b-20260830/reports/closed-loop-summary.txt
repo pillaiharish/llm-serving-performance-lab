@@ -1,0 +1,3 @@
+concurrency=1 status=completed ttft_p95=146.05419 tpot_p95=19.68136016129032 e2e_p95=755.39468 successful_req_s=1.385317181157701 output_tok_s=44.33014979704643 goodput=0
+concurrency=4 status=completed ttft_p95=190.777169 tpot_p95=20.18740806451613 e2e_p95=810.806218 successful_req_s=5.0036079453266264 output_tok_s=160.11545425045205 goodput=0
+concurrency=8 status=completed ttft_p95=191.208827 tpot_p95=20.732129258064518 e2e_p95=833.778335 successful_req_s=9.721881901501302 output_tok_s=311.10022084804166 goodput=0

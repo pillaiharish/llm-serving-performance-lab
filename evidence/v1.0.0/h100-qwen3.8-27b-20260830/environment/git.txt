@@ -1,0 +1,10 @@
+original_repo=/workspace/llm-serving-performance-lab
+original_branch=main
+original_head=c877982609e6aa620ae196a380b54bd6d50f29ac
+original_status_begin
+
+original_status_end
+c877982609e6aa620ae196a380b54bd6d50f29ac
+c877982 (HEAD, origin/main, origin/HEAD, main) Merge pull request #23 from pillaiharish/fix/v1-release-evidence-validation
+origin	https://github.com/pillaiharish/llm-serving-performance-lab.git (fetch)
+origin	https://github.com/pillaiharish/llm-serving-performance-lab.git (push)

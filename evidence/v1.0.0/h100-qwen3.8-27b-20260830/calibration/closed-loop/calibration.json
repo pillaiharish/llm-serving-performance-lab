@@ -1,0 +1,193 @@
+{
+  "calibration_schema_version": 1,
+  "calibration_id": "20260830T111904Z-cal-dec279eb",
+  "created_at": "2026-08-30T11:19:04.006827028Z",
+  "completed_at": "2026-08-30T11:19:04.175000099Z",
+  "status": "completed",
+  "complete": true,
+  "load_mode": "closed_loop",
+  "concurrency_values": [
+    1,
+    4,
+    8
+  ],
+  "request_rate_values": null,
+  "experiment_id": "20260830T111904Z-exp-834ba36b",
+  "experiment_path": "experiments/20260830T111904Z-exp-834ba36b",
+  "client_diagnostics": {
+    "num_cpu": 384,
+    "gomaxprocs": 384,
+    "go_version": "go1.25.5",
+    "goos": "linux",
+    "goarch": "amd64"
+  },
+  "planned_points": 3,
+  "evaluated_points": 3,
+  "clean_points": 3,
+  "dirty_points": 0,
+  "unevaluated_points": 0,
+  "points": [
+    {
+      "point_index": 1,
+      "point_id": "point-000001",
+      "point_status": "executed",
+      "requested_concurrency": 1,
+      "child_run_id": "20260830T111904Z-e009d910",
+      "child_run_path": "experiments/20260830T111904Z-exp-834ba36b/runs/20260830T111904Z-e009d910",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 100,
+        "started": 100,
+        "completed": 100,
+        "successful": 100,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 2998.1513998099053,
+        "numerator": 100,
+        "denominator_seconds": 0.033353886,
+        "unit": "requests/s"
+      },
+      "closed_loop": {
+        "requested_concurrency": 1,
+        "worker_count": 1,
+        "max_observed_active": 1
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:04.007555853Z",
+        "completed_at": "2026-08-30T11:19:04.070839138Z",
+        "elapsed_ns": 63283265,
+        "sample_interval_ns": 10000000,
+        "samples": 8,
+        "goroutines_start": 3,
+        "goroutines_observed_peak": 8,
+        "goroutines_end": 3,
+        "heap_alloc_start_bytes": 4355480,
+        "heap_alloc_observed_peak_bytes": 8836408,
+        "heap_alloc_end_bytes": 7769984,
+        "heap_sys_observed_peak_bytes": 15237120,
+        "sys_observed_peak_bytes": 23681288,
+        "total_alloc_delta_bytes": 11458768,
+        "mallocs_delta": 26487,
+        "frees_delta": 17694,
+        "num_gc_delta": 2,
+        "gc_pause_total_delta_ns": 842155
+      }
+    },
+    {
+      "point_index": 2,
+      "point_id": "point-000002",
+      "point_status": "executed",
+      "requested_concurrency": 4,
+      "child_run_id": "20260830T111904Z-e0023795",
+      "child_run_path": "experiments/20260830T111904Z-exp-834ba36b/runs/20260830T111904Z-e0023795",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 100,
+        "started": 100,
+        "completed": 100,
+        "successful": 100,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 6487.605721211882,
+        "numerator": 100,
+        "denominator_seconds": 0.015414007,
+        "unit": "requests/s"
+      },
+      "closed_loop": {
+        "requested_concurrency": 4,
+        "worker_count": 4,
+        "max_observed_active": 4
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:04.070939227Z",
+        "completed_at": "2026-08-30T11:19:04.116308663Z",
+        "elapsed_ns": 45369476,
+        "sample_interval_ns": 10000000,
+        "samples": 6,
+        "goroutines_start": 3,
+        "goroutines_observed_peak": 17,
+        "goroutines_end": 4,
+        "heap_alloc_start_bytes": 7777640,
+        "heap_alloc_observed_peak_bytes": 10591912,
+        "heap_alloc_end_bytes": 10591912,
+        "heap_sys_observed_peak_bytes": 15237120,
+        "sys_observed_peak_bytes": 24467720,
+        "total_alloc_delta_bytes": 11319488,
+        "mallocs_delta": 23549,
+        "frees_delta": 17713,
+        "num_gc_delta": 2,
+        "gc_pause_total_delta_ns": 1205511
+      }
+    },
+    {
+      "point_index": 3,
+      "point_id": "point-000003",
+      "point_status": "executed",
+      "requested_concurrency": 8,
+      "child_run_id": "20260830T111904Z-60208bb1",
+      "child_run_path": "experiments/20260830T111904Z-exp-834ba36b/runs/20260830T111904Z-60208bb1",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 100,
+        "started": 100,
+        "completed": 100,
+        "successful": 100,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 5744.078443892387,
+        "numerator": 100,
+        "denominator_seconds": 0.017409233,
+        "unit": "requests/s"
+      },
+      "closed_loop": {
+        "requested_concurrency": 8,
+        "worker_count": 8,
+        "max_observed_active": 8
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:04.116554701Z",
+        "completed_at": "2026-08-30T11:19:04.172431366Z",
+        "elapsed_ns": 55876665,
+        "sample_interval_ns": 10000000,
+        "samples": 7,
+        "goroutines_start": 4,
+        "goroutines_observed_peak": 29,
+        "goroutines_end": 4,
+        "heap_alloc_start_bytes": 10599136,
+        "heap_alloc_observed_peak_bytes": 10599136,
+        "heap_alloc_end_bytes": 9513864,
+        "heap_sys_observed_peak_bytes": 22937600,
+        "sys_observed_peak_bytes": 35477768,
+        "total_alloc_delta_bytes": 11919624,
+        "mallocs_delta": 23927,
+        "frees_delta": 25043,
+        "num_gc_delta": 3,
+        "gc_pause_total_delta_ns": 2330734
+      }
+    }
+  ]
+}

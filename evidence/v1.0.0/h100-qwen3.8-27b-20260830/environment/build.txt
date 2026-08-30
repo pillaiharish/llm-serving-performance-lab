@@ -1,0 +1,6 @@
+version: devel
+revision: unknown
+go: go1.25.5
+go version go1.25.5 linux/amd64
+efb5b426816f8f771ec556ff86347f4d388c3766af0d27561bc34c164067eb85  /workspace/slentore-v1-build-5NK9P0/slentore
+5d84761b509a44b819c6354ba7690ff455638fa19a8930193627bf59a142b8b9  /workspace/slentore-v1-build-5NK9P0/slentore-fake-server

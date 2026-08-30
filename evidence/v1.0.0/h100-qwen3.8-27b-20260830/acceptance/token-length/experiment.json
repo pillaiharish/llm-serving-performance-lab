@@ -1,0 +1,89 @@
+{
+  "experiment_schema_version": 1,
+  "experiment_id": "20260830T111957Z-exp-1c30f54c",
+  "created_at": "2026-08-30T11:19:57.029795368Z",
+  "completed_at": "2026-08-30T11:20:09.670221682Z",
+  "status": "completed",
+  "complete": true,
+  "model": "Qwen/Qwen3.8-27B",
+  "load_mode": "closed_loop",
+  "workload_mode": "token_length",
+  "axes": {
+    "concurrency_values": [],
+    "request_rate_values": [],
+    "input_token_values": [
+      128,
+      512
+    ],
+    "output_token_values": [
+      32,
+      64
+    ]
+  },
+  "planned_points": 4,
+  "executed_points": 4,
+  "preflight_failed_points": 0,
+  "cancelled_points": 0,
+  "not_started_points": 0,
+  "child_runs_completed": 4,
+  "child_runs_failed": 0,
+  "child_runs_cancelled": 0,
+  "points": [
+    {
+      "point_index": 1,
+      "point_id": "point-000001",
+      "parameters": {
+        "concurrency": 1,
+        "request_rate": null,
+        "input_tokens": 128,
+        "requested_output_tokens": 32
+      },
+      "point_status": "executed",
+      "run_id": "20260830T111957Z-ad430a26",
+      "run_path": "runs/20260830T111957Z-ad430a26",
+      "run_status": "completed"
+    },
+    {
+      "point_index": 2,
+      "point_id": "point-000002",
+      "parameters": {
+        "concurrency": 1,
+        "request_rate": null,
+        "input_tokens": 128,
+        "requested_output_tokens": 64
+      },
+      "point_status": "executed",
+      "run_id": "20260830T111959Z-eb8779d6",
+      "run_path": "runs/20260830T111959Z-eb8779d6",
+      "run_status": "completed"
+    },
+    {
+      "point_index": 3,
+      "point_id": "point-000003",
+      "parameters": {
+        "concurrency": 1,
+        "request_rate": null,
+        "input_tokens": 512,
+        "requested_output_tokens": 32
+      },
+      "point_status": "executed",
+      "run_id": "20260830T112003Z-67f66cbf",
+      "run_path": "runs/20260830T112003Z-67f66cbf",
+      "run_status": "completed"
+    },
+    {
+      "point_index": 4,
+      "point_id": "point-000004",
+      "parameters": {
+        "concurrency": 1,
+        "request_rate": null,
+        "input_tokens": 512,
+        "requested_output_tokens": 64
+      },
+      "point_status": "executed",
+      "run_id": "20260830T112005Z-e3053716",
+      "run_path": "runs/20260830T112005Z-e3053716",
+      "run_status": "completed"
+    }
+  ]
+}

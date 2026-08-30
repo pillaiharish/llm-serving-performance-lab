@@ -1,0 +1,173 @@
+{
+  "schema_version": 7,
+  "run_id": "20260830T111957Z-ad430a26",
+  "slentore_version": "devel",
+  "created_at": "2026-08-30T11:19:57.047189752Z",
+  "run_status": "completed",
+  "model": "Qwen/Qwen3.8-27B",
+  "base_url": "http://127.0.0.1:18000/v1",
+  "temperature": 0,
+  "request_timeout": "2m0s",
+  "workload": {
+    "mode": "token_length",
+    "input": {
+      "contract": "rendered_chat_input",
+      "target_tokens": 128,
+      "resolved_tokens": 128
+    },
+    "output": {
+      "requested_max_tokens": 32
+    },
+    "builder": {
+      "kind": "deterministic_fixture",
+      "version": "1"
+    },
+    "prompt_bytes": 152,
+    "prompt_sha256": "35dead956503021cccfd29de0b6e4e8a78d0a649b87e194b426a1087af52e8c2",
+    "tokenizer": {
+      "adapter": "vllm_chat_render",
+      "adapter_version": "1",
+      "contract": "rendered_chat_input",
+      "model": "Qwen/Qwen3.8-27B",
+      "source": "http://127.0.0.1:18000/tokenize",
+      "revision": null,
+      "vocabulary_sha256": null,
+      "behavioral_fingerprint_sha256": "ee87b8d16699a1fbc0b9781c82ed00c47a9083a71a5c842c95ec12d3c91d4787",
+      "model_max_length": 32768
+    }
+  },
+  "token_timing": {
+    "mode": "disabled"
+  },
+  "slo": {},
+  "safety_limits": {
+    "max_concurrency": 256,
+    "max_requests": 10000,
+    "max_request_rate": 10000,
+    "max_in_flight": 256,
+    "max_input_tokens": 131072,
+    "max_output_tokens": 32768
+  },
+  "load": {
+    "mode": "closed_loop",
+    "closed_loop": {
+      "requested_concurrency": 1,
+      "requested_requests": 2
+    }
+  },
+  "client_diagnostics": {
+    "num_cpu": 384,
+    "gomaxprocs": 384,
+    "go_version": "go1.25.5",
+    "goos": "linux",
+    "goarch": "amd64"
+  },
+  "lifecycle": {
+    "started_at": "2026-08-30T11:19:57.047191462Z",
+    "completed_at": "2026-08-30T11:19:59.224959357Z",
+    "elapsed_ns": 2177767875,
+    "transitions": [
+      {
+        "sequence": 1,
+        "phase": "setup",
+        "entered_at": "2026-08-30T11:19:57.047191462Z",
+        "entered_after_ns": 0,
+        "reason": "lifecycle_started"
+      },
+      {
+        "sequence": 2,
+        "phase": "warmup",
+        "entered_at": "2026-08-30T11:19:57.047202622Z",
+        "entered_after_ns": 11150,
+        "reason": "warmup_started"
+      },
+      {
+        "sequence": 3,
+        "phase": "measurement",
+        "entered_at": "2026-08-30T11:19:57.774937718Z",
+        "entered_after_ns": 727746236,
+        "reason": "warmup_complete"
+      },
+      {
+        "sequence": 4,
+        "phase": "stop_admission",
+        "entered_at": "2026-08-30T11:19:58.499289997Z",
+        "entered_after_ns": 1452098525,
+        "reason": "measured_request_limit_reached"
+      },
+      {
+        "sequence": 5,
+        "phase": "drain",
+        "entered_at": "2026-08-30T11:19:58.499289997Z",
+        "entered_after_ns": 1452098525,
+        "reason": "measured_request_limit_reached"
+      },
+      {
+        "sequence": 6,
+        "phase": "artifacts",
+        "entered_at": "2026-08-30T11:19:59.224959357Z",
+        "entered_after_ns": 2177767875,
+        "reason": "drain_complete"
+      }
+    ]
+  },
+  "stop_admission": {
+    "stopped_at": "2026-08-30T11:19:58.499289997Z",
+    "stopped_after_ns": 1452098525,
+    "reason": "measured_request_limit_reached"
+  },
+  "warmup": {
+    "phase": "warmup",
+    "status": "completed",
+    "started_at": "2026-08-30T11:19:57.047202622Z",
+    "completed_at": "2026-08-30T11:19:57.774930918Z",
+    "elapsed_ns": 727728296,
+    "requested": 1,
+    "attempted": 1,
+    "completed": 1,
+    "successful": 1,
+    "failed": 0,
+    "requested_concurrency": 1,
+    "effective_workers": 1,
+    "max_observed_active_requests": 1,
+    "outcomes": {
+      "succeeded": 1,
+      "request_error": 0,
+      "request_timeout": 0,
+      "parent_cancelled": 0,
+      "drain_timeout": 0
+    }
+  },
+  "measurement": {
+    "phase": "measured",
+    "status": "completed",
+    "started_at": "2026-08-30T11:19:57.774937718Z",
+    "completed_at": "2026-08-30T11:19:59.224956027Z",
+    "elapsed_ns": 1450018309,
+    "requested": 2,
+    "attempted": 2,
+    "completed": 2,
+    "successful": 2,
+    "failed": 0,
+    "requested_concurrency": 1,
+    "effective_workers": 1,
+    "max_observed_active_requests": 1,
+    "outcomes": {
+      "succeeded": 2,
+      "request_error": 0,
+      "request_timeout": 0,
+      "parent_cancelled": 0,
+      "drain_timeout": 0
+    }
+  },
+  "drain": {
+    "started_at": "2026-08-30T11:19:58.499289997Z",
+    "completed_at": "2026-08-30T11:19:59.224959357Z",
+    "elapsed_ns": 725669350,
+    "timeout": "2m0s",
+    "timed_out": false,
+    "parent_cancelled": false,
+    "cancelled_requests": 0,
+    "cancelled_request_ids": []
+  }
+}

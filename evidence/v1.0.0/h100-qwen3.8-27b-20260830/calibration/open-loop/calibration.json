@@ -1,0 +1,379 @@
+{
+  "calibration_schema_version": 1,
+  "calibration_id": "20260830T111904Z-cal-af04763b",
+  "created_at": "2026-08-30T11:19:04.205347025Z",
+  "completed_at": "2026-08-30T11:19:10.2338198Z",
+  "status": "completed",
+  "complete": true,
+  "load_mode": "open_loop",
+  "concurrency_values": null,
+  "request_rate_values": [
+    2,
+    5,
+    10
+  ],
+  "experiment_id": "20260830T111904Z-exp-0febd9c2",
+  "experiment_path": "experiments/20260830T111904Z-exp-0febd9c2",
+  "client_diagnostics": {
+    "num_cpu": 384,
+    "gomaxprocs": 384,
+    "go_version": "go1.25.5",
+    "goos": "linux",
+    "goarch": "amd64"
+  },
+  "planned_points": 3,
+  "evaluated_points": 3,
+  "clean_points": 3,
+  "dirty_points": 0,
+  "unevaluated_points": 0,
+  "points": [
+    {
+      "point_index": 1,
+      "point_id": "point-000001",
+      "point_status": "executed",
+      "configured_request_rate": 2,
+      "child_run_id": "20260830T111904Z-c70d34e9",
+      "child_run_path": "experiments/20260830T111904Z-exp-0febd9c2/runs/20260830T111904Z-c70d34e9",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 4,
+        "started": 4,
+        "completed": 4,
+        "successful": 4,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 1.9990358260399022,
+        "numerator": 4,
+        "denominator_seconds": 2.000964639,
+        "unit": "requests/s"
+      },
+      "open_loop": {
+        "configured_request_rate": 2,
+        "admission_window_seconds": 2,
+        "max_in_flight": 16,
+        "planned_arrivals": 4,
+        "processed_arrivals": 4,
+        "started_arrivals": 4,
+        "client_limited": 0,
+        "scheduler_limited": 0,
+        "unprocessed_due_to_cancellation": 0,
+        "max_observed_in_flight": 1,
+        "planned_arrival_rate": {
+          "available": true,
+          "value": 2,
+          "numerator": 4,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "actual_start_rate": {
+          "available": true,
+          "value": 2,
+          "numerator": 4,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "delivery_ratio": {
+          "available": true,
+          "value": 1,
+          "numerator": 4,
+          "denominator": 4,
+          "unit": "ratio"
+        },
+        "client_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 4,
+          "unit": "ratio"
+        },
+        "scheduler_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 4,
+          "unit": "ratio"
+        },
+        "cancellation_unprocessed_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 4,
+          "unit": "ratio"
+        }
+      },
+      "scheduler_lag_ms": {
+        "available": true,
+        "sample_count": 4,
+        "unavailable_count": 0,
+        "mean": 0.88309175,
+        "min": 0.320277,
+        "p50": 0.926565,
+        "p90": 1.242165,
+        "p95": 1.242165,
+        "p99": 1.242165,
+        "max": 1.242165,
+        "unit": "ms"
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:04.20616399Z",
+        "completed_at": "2026-08-30T11:19:06.21285238Z",
+        "elapsed_ns": 2006688400,
+        "sample_interval_ns": 10000000,
+        "samples": 202,
+        "goroutines_start": 3,
+        "goroutines_observed_peak": 8,
+        "goroutines_end": 4,
+        "heap_alloc_start_bytes": 4350664,
+        "heap_alloc_observed_peak_bytes": 5415504,
+        "heap_alloc_end_bytes": 5415504,
+        "heap_sys_observed_peak_bytes": 11173888,
+        "sys_observed_peak_bytes": 18372872,
+        "total_alloc_delta_bytes": 1064840,
+        "mallocs_delta": 4663,
+        "frees_delta": 456,
+        "num_gc_delta": 0,
+        "gc_pause_total_delta_ns": 0
+      }
+    },
+    {
+      "point_index": 2,
+      "point_id": "point-000002",
+      "point_status": "executed",
+      "configured_request_rate": 5,
+      "child_run_id": "20260830T111906Z-aa25e3f8",
+      "child_run_path": "experiments/20260830T111904Z-exp-0febd9c2/runs/20260830T111906Z-aa25e3f8",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 10,
+        "started": 10,
+        "completed": 10,
+        "successful": 10,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 4.99772086686334,
+        "numerator": 10,
+        "denominator_seconds": 2.000912069,
+        "unit": "requests/s"
+      },
+      "open_loop": {
+        "configured_request_rate": 5,
+        "admission_window_seconds": 2,
+        "max_in_flight": 16,
+        "planned_arrivals": 10,
+        "processed_arrivals": 10,
+        "started_arrivals": 10,
+        "client_limited": 0,
+        "scheduler_limited": 0,
+        "unprocessed_due_to_cancellation": 0,
+        "max_observed_in_flight": 1,
+        "planned_arrival_rate": {
+          "available": true,
+          "value": 5,
+          "numerator": 10,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "actual_start_rate": {
+          "available": true,
+          "value": 5,
+          "numerator": 10,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "delivery_ratio": {
+          "available": true,
+          "value": 1,
+          "numerator": 10,
+          "denominator": 10,
+          "unit": "ratio"
+        },
+        "client_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 10,
+          "unit": "ratio"
+        },
+        "scheduler_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 10,
+          "unit": "ratio"
+        },
+        "cancellation_unprocessed_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 10,
+          "unit": "ratio"
+        }
+      },
+      "scheduler_lag_ms": {
+        "available": true,
+        "sample_count": 10,
+        "unavailable_count": 0,
+        "mean": 1.1548873999999998,
+        "min": 0.112319,
+        "p50": 1.1917,
+        "p90": 1.609027,
+        "p95": 1.716349,
+        "p99": 1.716349,
+        "max": 1.716349,
+        "unit": "ms"
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:06.213096328Z",
+        "completed_at": "2026-08-30T11:19:08.220480085Z",
+        "elapsed_ns": 2007383746,
+        "sample_interval_ns": 10000000,
+        "samples": 202,
+        "goroutines_start": 4,
+        "goroutines_observed_peak": 7,
+        "goroutines_end": 5,
+        "heap_alloc_start_bytes": 5423144,
+        "heap_alloc_observed_peak_bytes": 6611992,
+        "heap_alloc_end_bytes": 6611992,
+        "heap_sys_observed_peak_bytes": 11173888,
+        "sys_observed_peak_bytes": 18635016,
+        "total_alloc_delta_bytes": 1188848,
+        "mallocs_delta": 2916,
+        "frees_delta": 130,
+        "num_gc_delta": 0,
+        "gc_pause_total_delta_ns": 0
+      }
+    },
+    {
+      "point_index": 3,
+      "point_id": "point-000003",
+      "point_status": "executed",
+      "configured_request_rate": 10,
+      "child_run_id": "20260830T111908Z-f3745c33",
+      "child_run_path": "experiments/20260830T111904Z-exp-0febd9c2/runs/20260830T111908Z-f3745c33",
+      "run_status": "completed",
+      "delivery_clean": true,
+      "delivery_reasons": [],
+      "counts": {
+        "requested_or_planned": 20,
+        "started": 20,
+        "completed": 20,
+        "successful": 20,
+        "failed": 0,
+        "request_error": 0,
+        "request_timeout": 0,
+        "parent_cancelled": 0,
+        "drain_timeout": 0
+      },
+      "successful_request_throughput": {
+        "available": true,
+        "value": 9.999255485434322,
+        "numerator": 20,
+        "denominator_seconds": 2.000148914,
+        "unit": "requests/s"
+      },
+      "open_loop": {
+        "configured_request_rate": 10,
+        "admission_window_seconds": 2,
+        "max_in_flight": 16,
+        "planned_arrivals": 20,
+        "processed_arrivals": 20,
+        "started_arrivals": 20,
+        "client_limited": 0,
+        "scheduler_limited": 0,
+        "unprocessed_due_to_cancellation": 0,
+        "max_observed_in_flight": 1,
+        "planned_arrival_rate": {
+          "available": true,
+          "value": 10,
+          "numerator": 20,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "actual_start_rate": {
+          "available": true,
+          "value": 10,
+          "numerator": 20,
+          "denominator_seconds": 2,
+          "unit": "requests/s"
+        },
+        "delivery_ratio": {
+          "available": true,
+          "value": 1,
+          "numerator": 20,
+          "denominator": 20,
+          "unit": "ratio"
+        },
+        "client_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 20,
+          "unit": "ratio"
+        },
+        "scheduler_limited_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 20,
+          "unit": "ratio"
+        },
+        "cancellation_unprocessed_ratio": {
+          "available": true,
+          "value": 0,
+          "numerator": 0,
+          "denominator": 20,
+          "unit": "ratio"
+        }
+      },
+      "scheduler_lag_ms": {
+        "available": true,
+        "sample_count": 20,
+        "unavailable_count": 0,
+        "mean": 1.0068441500000003,
+        "min": 0.121379,
+        "p50": 1.119094,
+        "p90": 1.184488,
+        "p95": 1.192857,
+        "p99": 1.33367,
+        "max": 1.33367,
+        "unit": "ms"
+      },
+      "resource": {
+        "started_at": "2026-08-30T11:19:08.220786232Z",
+        "completed_at": "2026-08-30T11:19:10.231413276Z",
+        "elapsed_ns": 2010627053,
+        "sample_interval_ns": 10000000,
+        "samples": 202,
+        "goroutines_start": 5,
+        "goroutines_observed_peak": 8,
+        "goroutines_end": 4,
+        "heap_alloc_start_bytes": 6619200,
+        "heap_alloc_observed_peak_bytes": 7919456,
+        "heap_alloc_end_bytes": 6033864,
+        "heap_sys_observed_peak_bytes": 11173888,
+        "sys_observed_peak_bytes": 19486984,
+        "total_alloc_delta_bytes": 2534880,
+        "mallocs_delta": 5487,
+        "frees_delta": 7863,
+        "num_gc_delta": 1,
+        "gc_pause_total_delta_ns": 267788
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+target_input=128 resolved_input=128 output_max=32 status=completed ttft_p95=120.022775 tpot_p95=19.531070870967742
+target_input=128 resolved_input=128 output_max=64 status=completed ttft_p95=125.685957 tpot_p95=19.529780365079365
+target_input=512 resolved_input=512 output_max=32 status=completed ttft_p95=128.500728 tpot_p95=19.723490548387097
+target_input=512 resolved_input=512 output_max=64 status=completed ttft_p95=126.030365 tpot_p95=19.73532834920635
+target_resolved_match=yes

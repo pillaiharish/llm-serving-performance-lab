@@ -1,0 +1,7 @@
+models_status=200
+tokenizer_status=200
+chat_status=200
+authentication_required=yes
+served_model=Qwen/Qwen3.8-27B
+base_url=http://127.0.0.1:18000/v1
+tokenizer_url=http://127.0.0.1:18000/tokenize

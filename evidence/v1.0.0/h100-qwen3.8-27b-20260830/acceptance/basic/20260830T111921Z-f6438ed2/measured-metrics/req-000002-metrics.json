@@ -1,0 +1,136 @@
+{
+  "run_id": "20260830T111921Z-f6438ed2",
+  "request_id": "req-000002",
+  "time_to_headers": {
+    "available": true,
+    "value": 4.059553,
+    "unit": "ms"
+  },
+  "ttfb": {
+    "available": true,
+    "value": 4.034983,
+    "unit": "ms"
+  },
+  "ttft": {
+    "available": true,
+    "value": 125.25714,
+    "unit": "ms"
+  },
+  "ttlt": {
+    "available": true,
+    "value": 734.57227,
+    "unit": "ms"
+  },
+  "e2e": {
+    "available": true,
+    "value": 734.61311,
+    "unit": "ms"
+  },
+  "tpot": {
+    "available": true,
+    "value": 19.655326774193547,
+    "unit": "ms/token"
+  },
+  "output_tokens_per_second": {
+    "available": true,
+    "value": 43.560344301505864,
+    "unit": "tokens/s"
+  },
+  "decode_tokens_per_second": {
+    "available": true,
+    "value": 50.87679342543159,
+    "unit": "tokens/s"
+  },
+  "inter_chunk_latency": {
+    "available": true,
+    "count": 31,
+    "mean_ms": 19.655326774193554,
+    "min_ms": 18.792964,
+    "max_ms": 20.002706,
+    "values_ms": [
+      18.792964,
+      19.691167,
+      20.001156,
+      19.35742,
+      20.002706,
+      19.644628,
+      19.703428,
+      19.626748,
+      19.288211,
+      19.989426,
+      19.730467,
+      19.708018,
+      19.752757,
+      19.630778,
+      19.589659,
+      19.732898,
+      19.692987,
+      19.627299,
+      19.691988,
+      19.641068,
+      19.650548,
+      19.685908,
+      19.662368,
+      19.643478,
+      19.690018,
+      19.679368,
+      19.638358,
+      19.702787,
+      19.648309,
+      19.707518,
+      19.710697
+    ]
+  },
+  "itl": {
+    "available": true,
+    "source": "vllm_return_token_ids_client_receive",
+    "count": 31,
+    "mean_ms": 19.655326774193554,
+    "min_ms": 18.792964,
+    "max_ms": 20.002706,
+    "values_ms": [
+      18.792964,
+      19.691167,
+      20.001156,
+      19.35742,
+      20.002706,
+      19.644628,
+      19.703428,
+      19.626748,
+      19.288211,
+      19.989426,
+      19.730467,
+      19.708018,
+      19.752757,
+      19.630778,
+      19.589659,
+      19.732898,
+      19.692987,
+      19.627299,
+      19.691988,
+      19.641068,
+      19.650548,
+      19.685908,
+      19.662368,
+      19.643478,
+      19.690018,
+      19.679368,
+      19.638358,
+      19.702787,
+      19.648309,
+      19.707518,
+      19.710697
+    ]
+  },
+  "token_usage": {
+    "input_tokens": 60,
+    "output_tokens": 32,
+    "total_tokens": 92,
+    "source": "server_usage",
+    "available": true
+  },
+  "stream_event_count": 35,
+  "content_event_count": 32,
+  "response_bytes": 144,
+  "response_body_bytes": 8209
+}

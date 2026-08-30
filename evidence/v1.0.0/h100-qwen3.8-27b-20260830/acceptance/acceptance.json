@@ -1,0 +1,71 @@
+{
+  "acceptance_schema_version": 1,
+  "created_at": "2026-08-30T11:20:09.729775+00:00",
+  "fixture": false,
+  "slentore_git_sha": "c877982609e6aa620ae196a380b54bd6d50f29ac",
+  "slentore_version_output": [
+    "version: devel",
+    "revision: unknown",
+    "go: go1.25.5"
+  ],
+  "base_url": "http://127.0.0.1:18000/v1",
+  "model": "Qwen/Qwen3.8-27B",
+  "tokenizer_url": "http://127.0.0.1:18000/tokenize",
+  "api_key_env": "VLLM_API_KEY",
+  "scenarios": {
+    "basic": {
+      "path": "basic",
+      "cli_exit": 0,
+      "settings": {
+        "concurrency": 1,
+        "requests": 5,
+        "warmup_requests": 2,
+        "max_output_tokens": 32
+      }
+    },
+    "closed_loop": {
+      "path": "closed-loop",
+      "cli_exit": 0,
+      "settings": {
+        "concurrency_values": [
+          1,
+          4,
+          8
+        ],
+        "requests": 16,
+        "warmup_requests": 2
+      }
+    },
+    "open_loop": {
+      "path": "open-loop",
+      "cli_exit": 0,
+      "settings": {
+        "request_rate_values": [
+          2.0,
+          5.0,
+          10.0
+        ],
+        "duration": "2s",
+        "max_in_flight": 16,
+        "warmup_requests": 2
+      }
+    },
+    "token_length": {
+      "path": "token-length",
+      "cli_exit": 0,
+      "settings": {
+        "input_token_values": [
+          128,
+          512
+        ],
+        "output_token_values": [
+          32,
+          64
+        ],
+        "concurrency": 1,
+        "requests": 2,
+        "warmup_requests": 1
+      }
+    }
+  }
+}

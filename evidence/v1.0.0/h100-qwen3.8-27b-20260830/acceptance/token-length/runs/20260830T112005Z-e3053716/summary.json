@@ -1,0 +1,316 @@
+{
+  "schema_version": 7,
+  "run_id": "20260830T112005Z-e3053716",
+  "run_status": "completed",
+  "complete": true,
+  "workload": {
+    "mode": "token_length",
+    "input_target_tokens": 512,
+    "input_resolved_tokens": 512,
+    "requested_output_max_tokens": 64
+  },
+  "load": {
+    "mode": "closed_loop",
+    "closed_loop": {
+      "requested_concurrency": 1,
+      "worker_count": 1,
+      "max_observed_active": 1
+    }
+  },
+  "counts": {
+    "requested_or_planned": 2,
+    "started": 2,
+    "completed": 2,
+    "successful": 2,
+    "failed": 0,
+    "request_error": 0,
+    "request_timeout": 0,
+    "parent_cancelled": 0,
+    "drain_timeout": 0
+  },
+  "durations": {
+    "completion_window_seconds": {
+      "available": true,
+      "value": 2.734077623,
+      "unit": "s"
+    },
+    "admission_window_seconds": {
+      "available": false,
+      "value": 0,
+      "unit": "s",
+      "reason": "not applicable to closed-loop load"
+    }
+  },
+  "request_rates": {
+    "request_success_rate": {
+      "available": true,
+      "value": 1,
+      "numerator": 2,
+      "denominator": 2,
+      "unit": "ratio"
+    },
+    "request_failure_rate": {
+      "available": true,
+      "value": 0,
+      "numerator": 0,
+      "denominator": 2,
+      "unit": "ratio"
+    },
+    "completed_request_throughput": {
+      "available": true,
+      "value": 0.7315081266074207,
+      "numerator": 2,
+      "denominator_seconds": 2.734077623,
+      "unit": "requests/s"
+    },
+    "successful_request_throughput": {
+      "available": true,
+      "value": 0.7315081266074207,
+      "numerator": 2,
+      "denominator_seconds": 2.734077623,
+      "unit": "requests/s"
+    }
+  },
+  "latency": {
+    "time_to_headers": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 5.4967035,
+      "min": 5.298965,
+      "p50": 5.298965,
+      "p90": 5.694442,
+      "p95": 5.694442,
+      "p99": 5.694442,
+      "max": 5.694442,
+      "unit": "ms"
+    },
+    "ttfb": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 5.4493385,
+      "min": 5.245385,
+      "p50": 5.245385,
+      "p90": 5.653292,
+      "p95": 5.653292,
+      "p99": 5.653292,
+      "max": 5.653292,
+      "unit": "ms"
+    },
+    "ttft": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 123.9979535,
+      "min": 121.965542,
+      "p50": 121.965542,
+      "p90": 126.030365,
+      "p95": 126.030365,
+      "p99": 126.030365,
+      "max": 126.030365,
+      "unit": "ms"
+    },
+    "ttlt": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 1366.794243,
+      "min": 1365.291228,
+      "p50": 1365.291228,
+      "p90": 1368.297258,
+      "p95": 1368.297258,
+      "p99": 1368.297258,
+      "max": 1368.297258,
+      "unit": "ms"
+    },
+    "e2e": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 1366.8371980000002,
+      "min": 1365.333478,
+      "p50": 1365.333478,
+      "p90": 1368.340918,
+      "p95": 1368.340918,
+      "p99": 1368.340918,
+      "max": 1368.340918,
+      "unit": "ms"
+    },
+    "tpot": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 19.726925230158727,
+      "min": 19.71852211111111,
+      "p50": 19.71852211111111,
+      "p90": 19.73532834920635,
+      "p95": 19.73532834920635,
+      "p99": 19.73532834920635,
+      "max": 19.73532834920635,
+      "unit": "ms/token"
+    }
+  },
+  "per_request_rates": {
+    "output_tokens_per_second": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 46.82348238272257,
+      "min": 46.771969732180445,
+      "p50": 46.771969732180445,
+      "p90": 46.87499503326469,
+      "p95": 46.87499503326469,
+      "p99": 46.87499503326469,
+      "max": 46.87499503326469,
+      "unit": "tokens/s"
+    },
+    "decode_tokens_per_second": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 50.69214638292546,
+      "min": 50.67055294472538,
+      "p50": 50.67055294472538,
+      "p90": 50.713739821125536,
+      "p95": 50.713739821125536,
+      "p99": 50.713739821125536,
+      "max": 50.713739821125536,
+      "unit": "tokens/s"
+    }
+  },
+  "icl": {
+    "eligible_successful_requests": 2,
+    "contributing_requests": 2,
+    "unavailable_requests": 0,
+    "request_means_ms": {
+      "available": true,
+      "sample_count": 2,
+      "unavailable_count": 0,
+      "mean": 19.726925230158727,
+      "min": 19.71852211111111,
+      "p50": 19.71852211111111,
+      "p90": 19.73532834920635,
+      "p95": 19.73532834920635,
+      "p99": 19.73532834920635,
+      "max": 19.73532834920635,
+      "unit": "ms"
+    },
+    "intervals_ms": {
+      "available": true,
+      "sample_count": 126,
+      "unavailable_count": 0,
+      "mean": 19.72692523015873,
+      "min": 17.856529,
+      "p50": 19.721127,
+      "p90": 20.029636,
+      "p95": 20.087546,
+      "p99": 21.162148,
+      "max": 21.311308,
+      "unit": "ms"
+    }
+  },
+  "itl": {
+    "eligible_successful_requests": 2,
+    "available_requests": 0,
+    "unavailable_requests": 2,
+    "available_sources": [],
+    "request_means_ms": {
+      "available": false,
+      "sample_count": 0,
+      "unavailable_count": 2,
+      "mean": 0,
+      "min": 0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "unit": "ms",
+      "reason": "no successful measured requests had available ITL"
+    },
+    "intervals_ms": {
+      "available": false,
+      "sample_count": 0,
+      "unavailable_count": 0,
+      "mean": 0,
+      "min": 0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0,
+      "unit": "ms",
+      "reason": "no proven ITL intervals were available"
+    }
+  },
+  "scheduler_lag_ms": {
+    "available": false,
+    "sample_count": 0,
+    "unavailable_count": 0,
+    "mean": 0,
+    "min": 0,
+    "p50": 0,
+    "p90": 0,
+    "p95": 0,
+    "p99": 0,
+    "max": 0,
+    "unit": "ms",
+    "reason": "not applicable to closed-loop load"
+  },
+  "tokens": {
+    "available": true,
+    "successful_requests": 2,
+    "usage_covered_requests": 2,
+    "successful_input_tokens": 1024,
+    "successful_output_tokens": 128,
+    "successful_total_tokens": 1152,
+    "throughput": {
+      "input_tokens": {
+        "available": true,
+        "value": 374.5321608229994,
+        "numerator": 1024,
+        "denominator_seconds": 2.734077623,
+        "unit": "tokens/s"
+      },
+      "output_tokens": {
+        "available": true,
+        "value": 46.816520102874925,
+        "numerator": 128,
+        "denominator_seconds": 2.734077623,
+        "unit": "tokens/s"
+      },
+      "total_tokens": {
+        "available": true,
+        "value": 421.34868092587436,
+        "numerator": 1152,
+        "denominator_seconds": 2.734077623,
+        "unit": "tokens/s"
+      }
+    }
+  },
+  "slo": {
+    "configured": false,
+    "successful_requests": 2,
+    "evaluable_requests": 0,
+    "good_requests": 0,
+    "bad_requests": 0,
+    "unevaluable_requests": 0,
+    "pass_ratio_among_evaluable": {
+      "available": false,
+      "value": 0,
+      "numerator": 0,
+      "denominator": 0,
+      "unit": "ratio",
+      "reason": "no SLO configured"
+    },
+    "goodput": {
+      "available": false,
+      "value": 0,
+      "numerator": 0,
+      "denominator_seconds": 0,
+      "unit": "requests/s",
+      "reason": "no SLO configured"
+    }
+  }
+}

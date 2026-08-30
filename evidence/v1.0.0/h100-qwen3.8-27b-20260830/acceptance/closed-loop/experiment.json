@@ -1,0 +1,73 @@
+{
+  "experiment_schema_version": 1,
+  "experiment_id": "20260830T111926Z-exp-d5ccf623",
+  "created_at": "2026-08-30T11:19:26.92940056Z",
+  "completed_at": "2026-08-30T11:19:46.450257718Z",
+  "status": "completed",
+  "complete": true,
+  "model": "Qwen/Qwen3.8-27B",
+  "load_mode": "closed_loop",
+  "workload_mode": "prompt",
+  "axes": {
+    "concurrency_values": [
+      1,
+      4,
+      8
+    ],
+    "request_rate_values": [],
+    "input_token_values": [],
+    "output_token_values": []
+  },
+  "planned_points": 3,
+  "executed_points": 3,
+  "preflight_failed_points": 0,
+  "cancelled_points": 0,
+  "not_started_points": 0,
+  "child_runs_completed": 3,
+  "child_runs_failed": 0,
+  "child_runs_cancelled": 0,
+  "points": [
+    {
+      "point_index": 1,
+      "point_id": "point-000001",
+      "parameters": {
+        "concurrency": 1,
+        "request_rate": null,
+        "input_tokens": null,
+        "requested_output_tokens": 32
+      },
+      "point_status": "executed",
+      "run_id": "20260830T111926Z-2edc8001",
+      "run_path": "runs/20260830T111926Z-2edc8001",
+      "run_status": "completed"
+    },
+    {
+      "point_index": 2,
+      "point_id": "point-000002",
+      "parameters": {
+        "concurrency": 4,
+        "request_rate": null,
+        "input_tokens": null,
+        "requested_output_tokens": 32
+      },
+      "point_status": "executed",
+      "run_id": "20260830T111939Z-04dad5a0",
+      "run_path": "runs/20260830T111939Z-04dad5a0",
+      "run_status": "completed"
+    },
+    {
+      "point_index": 3,
+      "point_id": "point-000003",
+      "parameters": {
+        "concurrency": 8,
+        "request_rate": null,
+        "input_tokens": null,
+        "requested_output_tokens": 32
+      },
+      "point_status": "executed",
+      "run_id": "20260830T111943Z-b0b48e40",
+      "run_path": "runs/20260830T111943Z-b0b48e40",
+      "run_status": "completed"
+    }
+  ]
+}

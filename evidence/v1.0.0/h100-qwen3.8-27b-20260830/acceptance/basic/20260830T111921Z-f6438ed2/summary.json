@@ -1,0 +1,333 @@
+{
+  "schema_version": 7,
+  "run_id": "20260830T111921Z-f6438ed2",
+  "run_status": "completed",
+  "complete": true,
+  "workload": {
+    "mode": "prompt",
+    "requested_output_max_tokens": 32
+  },
+  "load": {
+    "mode": "closed_loop",
+    "closed_loop": {
+      "requested_concurrency": 1,
+      "worker_count": 1,
+      "max_observed_active": 1
+    }
+  },
+  "counts": {
+    "requested_or_planned": 5,
+    "started": 5,
+    "completed": 5,
+    "successful": 5,
+    "failed": 0,
+    "request_error": 0,
+    "request_timeout": 0,
+    "parent_cancelled": 0,
+    "drain_timeout": 0
+  },
+  "durations": {
+    "completion_window_seconds": {
+      "available": true,
+      "value": 3.678163393,
+      "unit": "s"
+    },
+    "admission_window_seconds": {
+      "available": false,
+      "value": 0,
+      "unit": "s",
+      "reason": "not applicable to closed-loop load"
+    }
+  },
+  "request_rates": {
+    "request_success_rate": {
+      "available": true,
+      "value": 1,
+      "numerator": 5,
+      "denominator": 5,
+      "unit": "ratio"
+    },
+    "request_failure_rate": {
+      "available": true,
+      "value": 0,
+      "numerator": 0,
+      "denominator": 5,
+      "unit": "ratio"
+    },
+    "completed_request_throughput": {
+      "available": true,
+      "value": 1.3593740858591596,
+      "numerator": 5,
+      "denominator_seconds": 3.678163393,
+      "unit": "requests/s"
+    },
+    "successful_request_throughput": {
+      "available": true,
+      "value": 1.3593740858591596,
+      "numerator": 5,
+      "denominator_seconds": 3.678163393,
+      "unit": "requests/s"
+    }
+  },
+  "latency": {
+    "time_to_headers": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 5.3115144,
+      "min": 4.059553,
+      "p50": 4.560939,
+      "p90": 8.631672,
+      "p95": 8.631672,
+      "p99": 8.631672,
+      "max": 8.631672,
+      "unit": "ms"
+    },
+    "ttfb": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 5.2697066,
+      "min": 4.034983,
+      "p50": 4.530909,
+      "p90": 8.532953,
+      "p95": 8.532953,
+      "p99": 8.532953,
+      "max": 8.532953,
+      "unit": "ms"
+    },
+    "ttft": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 126.021852,
+      "min": 124.686903,
+      "p50": 125.403808,
+      "p90": 129.326862,
+      "p95": 129.326862,
+      "p99": 129.326862,
+      "max": 129.326862,
+      "unit": "ms"
+    },
+    "ttlt": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 735.5049894,
+      "min": 733.777215,
+      "p50": 735.079296,
+      "p90": 738.590323,
+      "p95": 738.590323,
+      "p99": 738.590323,
+      "max": 738.590323,
+      "unit": "ms"
+    },
+    "e2e": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 735.5532489999999,
+      "min": 733.817645,
+      "p50": 735.121196,
+      "p90": 738.667682,
+      "p95": 738.667682,
+      "p99": 738.667682,
+      "max": 738.667682,
+      "unit": "ms"
+    },
+    "tpot": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 19.660746367741933,
+      "min": 19.64807458064516,
+      "p50": 19.655326774193547,
+      "p90": 19.67971922580645,
+      "p95": 19.67971922580645,
+      "p99": 19.67971922580645,
+      "max": 19.67971922580645,
+      "unit": "ms/token"
+    }
+  },
+  "per_request_rates": {
+    "output_tokens_per_second": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 43.50488927121332,
+      "min": 43.32124009183334,
+      "p50": 43.5302371556159,
+      "p90": 43.60756411083574,
+      "p95": 43.60756411083574,
+      "p99": 43.60756411083574,
+      "max": 43.60756411083574,
+      "unit": "tokens/s"
+    },
+    "decode_tokens_per_second": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 50.862785756338994,
+      "min": 50.8137330886651,
+      "p50": 50.87679342543159,
+      "p90": 50.89557228091325,
+      "p95": 50.89557228091325,
+      "p99": 50.89557228091325,
+      "max": 50.89557228091325,
+      "unit": "tokens/s"
+    }
+  },
+  "icl": {
+    "eligible_successful_requests": 5,
+    "contributing_requests": 5,
+    "unavailable_requests": 0,
+    "request_means_ms": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 19.66074636774194,
+      "min": 19.64807458064516,
+      "p50": 19.655326774193554,
+      "p90": 19.67971922580646,
+      "p95": 19.67971922580646,
+      "p99": 19.67971922580646,
+      "max": 19.67971922580646,
+      "unit": "ms"
+    },
+    "intervals_ms": {
+      "available": true,
+      "sample_count": 155,
+      "unavailable_count": 0,
+      "mean": 19.660746367741922,
+      "min": 14.87447,
+      "p50": 19.680337,
+      "p90": 19.928026,
+      "p95": 19.997966,
+      "p99": 20.113815,
+      "max": 24.691905,
+      "unit": "ms"
+    }
+  },
+  "itl": {
+    "eligible_successful_requests": 5,
+    "available_requests": 5,
+    "unavailable_requests": 0,
+    "available_sources": [
+      "vllm_return_token_ids_client_receive"
+    ],
+    "request_means_ms": {
+      "available": true,
+      "sample_count": 5,
+      "unavailable_count": 0,
+      "mean": 19.66074636774194,
+      "min": 19.64807458064516,
+      "p50": 19.655326774193554,
+      "p90": 19.67971922580646,
+      "p95": 19.67971922580646,
+      "p99": 19.67971922580646,
+      "max": 19.67971922580646,
+      "unit": "ms"
+    },
+    "intervals_ms": {
+      "available": true,
+      "sample_count": 155,
+      "unavailable_count": 0,
+      "mean": 19.660746367741922,
+      "min": 14.87447,
+      "p50": 19.680337,
+      "p90": 19.928026,
+      "p95": 19.997966,
+      "p99": 20.113815,
+      "max": 24.691905,
+      "unit": "ms"
+    }
+  },
+  "scheduler_lag_ms": {
+    "available": false,
+    "sample_count": 0,
+    "unavailable_count": 0,
+    "mean": 0,
+    "min": 0,
+    "p50": 0,
+    "p90": 0,
+    "p95": 0,
+    "p99": 0,
+    "max": 0,
+    "unit": "ms",
+    "reason": "not applicable to closed-loop load"
+  },
+  "tokens": {
+    "available": true,
+    "successful_requests": 5,
+    "usage_covered_requests": 5,
+    "successful_input_tokens": 300,
+    "successful_output_tokens": 160,
+    "successful_total_tokens": 460,
+    "throughput": {
+      "input_tokens": {
+        "available": true,
+        "value": 81.56244515154958,
+        "numerator": 300,
+        "denominator_seconds": 3.678163393,
+        "unit": "tokens/s"
+      },
+      "output_tokens": {
+        "available": true,
+        "value": 43.49997074749311,
+        "numerator": 160,
+        "denominator_seconds": 3.678163393,
+        "unit": "tokens/s"
+      },
+      "total_tokens": {
+        "available": true,
+        "value": 125.06241589904268,
+        "numerator": 460,
+        "denominator_seconds": 3.678163393,
+        "unit": "tokens/s"
+      }
+    }
+  },
+  "slo": {
+    "configured": true,
+    "ttft": {
+      "threshold_ms": 10000,
+      "available_successful_requests": 5,
+      "passing_requests": 5,
+      "failing_requests": 0,
+      "unavailable_requests": 0
+    },
+    "tpot": {
+      "threshold_ms": 1000,
+      "available_successful_requests": 5,
+      "passing_requests": 5,
+      "failing_requests": 0,
+      "unavailable_requests": 0
+    },
+    "e2e": {
+      "threshold_ms": 60000,
+      "available_successful_requests": 5,
+      "passing_requests": 5,
+      "failing_requests": 0,
+      "unavailable_requests": 0
+    },
+    "successful_requests": 5,
+    "evaluable_requests": 5,
+    "good_requests": 5,
+    "bad_requests": 0,
+    "unevaluable_requests": 0,
+    "pass_ratio_among_evaluable": {
+      "available": true,
+      "value": 1,
+      "numerator": 5,
+      "denominator": 5,
+      "unit": "ratio"
+    },
+    "goodput": {
+      "available": true,
+      "value": 1.3593740858591596,
+      "numerator": 5,
+      "denominator_seconds": 3.678163393,
+      "unit": "requests/s"
+    }
+  }
+}

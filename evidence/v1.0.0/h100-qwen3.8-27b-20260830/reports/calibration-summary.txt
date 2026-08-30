@@ -1,0 +1,10 @@
+closed_exit=0
+open_exit=0
+calibrations:?:delivery_clean=True
+calibrations:?:delivery_clean=True
+calibrations:?:delivery_clean=True
+calibrations:?:delivery_clean=True
+calibrations:?:delivery_clean=True
+calibrations:?:delivery_clean=True
+closed_result=PASS
+open_result=PASS

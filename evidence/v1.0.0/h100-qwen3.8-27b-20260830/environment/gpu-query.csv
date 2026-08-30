@@ -1,0 +1,2 @@
+name, uuid, pci.bus_id, driver_version, memory.total [MiB], power.limit [W], compute_cap
+NVIDIA H100 80GB HBM3, GPU-f8c9e670-18c9-cbb7-abe8-7fc6dac98333, 00000000:C6:00.0, 590.48.01, 81559 MiB, 700.00 W, 9.0

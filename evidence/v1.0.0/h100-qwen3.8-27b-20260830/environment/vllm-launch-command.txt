@@ -1,0 +1,1 @@
+/venv/main/bin/python /usr/local/bin/vllm serve Qwen/Qwen3.8-27B --max-model-len 32768 --gpu-memory-utilization 0.90 --host 0.0.0.0 --port 18000 --max-num-seqs 16 --kv-cache-dtype fp8 --language-model-only --tensor-parallel-size 1 --compilation-config {"cudagraph_capture_sizes": [1,2,3,4,5,6,7,8]} 

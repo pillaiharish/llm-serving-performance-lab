@@ -1,0 +1,12 @@
+tested_sha=c877982609e6aa620ae196a380b54bd6d50f29ac
+gpu=NVIDIA H100 80GB HBM3, GPU-f8c9e670-18c9-cbb7-abe8-7fc6dac98333, 00000000:C6:00.0, 590.48.01, 81559 MiB, 700.00 W, 9.0
+vllm_version=0.26.0
+served_model=Qwen/Qwen3.8-27B
+local_endpoint=http://127.0.0.1:18000/v1
+sanitized_launch_command=/venv/main/bin/python /usr/local/bin/vllm serve Qwen/Qwen3.8-27B --max-model-len 32768 --gpu-memory-utilization 0.90 --host 0.0.0.0 --port 18000 --max-num-seqs 16 --kv-cache-dtype fp8 --language-model-only --tensor-parallel-size 1 --compilation-config {"cudagraph_capture_sizes": [1,2,3,4,5,6,7,8]}  
+calibration_closed=PASS
+calibration_open=PASS
+acceptance_exit=0
+artifacts_valid=true
+acceptance_passed=true
+evidence_root=/workspace/slentore-v1-h100-acceptance/20260830T111746Z-c877982609e6
