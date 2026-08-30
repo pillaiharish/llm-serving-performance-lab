@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -503,4 +504,251 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+func TestClientFirstByteObservationIsRaceFreeUnderConcurrency(t *testing.T) {
+	const workers = 50
+	fixture := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\n" +
+		"data: [DONE]\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		// Flush headers so the transport's reader goroutine receives the first
+		// response byte and fires GotFirstResponseByte on a separate goroutine
+		// while Execute is still blocked in httpClient.Do.
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(2 * time.Millisecond)
+		_, _ = io.WriteString(writer, fixture)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	observations := make([]benchmark.RequestObservation, workers)
+	start := make(chan struct{})
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		observations[i] = newObservation()
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs <- client.Execute(context.Background(), benchmark.Request{
+				RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+			}, &observations[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	completed := 0
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Execute returned error under concurrency: %v", err)
+		}
+		completed++
+	}
+	if completed != workers {
+		t.Fatalf("completed = %d, want %d", completed, workers)
+	}
+	for i := range observations {
+		if observations[i].FirstByteAt == nil || observations[i].FirstByteAfterNS == nil {
+			t.Fatalf("observation %d missing first-byte timestamp: %+v", i, observations[i])
+		}
+		if observations[i].FirstByteAfterNS != nil && *observations[i].FirstByteAfterNS < 0 {
+			t.Fatalf("observation %d has negative first-byte offset: %d", i, *observations[i].FirstByteAfterNS)
+		}
+	}
+}
+
+func TestClientFirstByteObservationCapturedOnCancelledRequest(t *testing.T) {
+	const workers = 25
+	var inFlight sync.WaitGroup
+	inFlight.Add(workers)
+	released := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		if flusher, ok := writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		// Signal that headers are flushed and this request is in flight, then
+		// block until the test cancels the context (or a safety timeout).
+		inFlight.Done()
+		select {
+		case <-request.Context().Done():
+		case <-released:
+		}
+	}))
+	defer server.Close()
+	defer close(released)
+
+	client, err := NewClient(server.Client(), server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	observations := make([]benchmark.RequestObservation, workers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		observations[i] = newObservation()
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			err := client.Execute(ctx, benchmark.Request{
+				RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+			}, &observations[i])
+			if err == nil || !errors.Is(err, context.Canceled) {
+				t.Errorf("worker %d: error = %v, want context.Canceled", i, err)
+			}
+		}(i)
+	}
+	close(start)
+
+	// Wait until every worker's request has flushed headers (and thus the
+	// transport's GotFirstResponseByte callback is armed), then cancel the
+	// shared parent context so cancellation races the callback deterministically.
+	inFlight.Wait()
+	cancel()
+	wg.Wait()
+
+	// The test passes if no race is detected and every cancelled request
+	// returned context.Canceled. The observation may or may not carry a
+	// first-byte timestamp depending on whether the callback fired before the
+	// context error propagated, but Execute must not race on the observation.
+	for i := range observations {
+		if observations[i].RequestStartedAt == nil {
+			t.Fatalf("observation %d missing RequestStartedAt: %+v", i, observations[i])
+		}
+		if observations[i].CompletedAt == nil {
+			t.Fatalf("observation %d missing CompletedAt: %+v", i, observations[i])
+		}
+	}
+}
+
+// TestClientFirstByteCallbackOwnershipAfterExecuteReturns verifies that a
+// delayed GotFirstResponseByte callback firing after Execute has already
+// returned never mutates the RequestObservation. The callback is allowed to
+// mutate its private capture state after Execute returns, but the observation
+// is owned exclusively by the caller once Execute returns. It also verifies
+// the complementary synchronous case: when the callback fires before RoundTrip
+// returns an error, the first-byte timestamp is preserved in the partial
+// observation.
+func TestClientFirstByteCallbackOwnershipAfterExecuteReturns(t *testing.T) {
+	t.Run("late callback does not mutate observation after Execute returns", func(t *testing.T) {
+		var firstByteCallback func()
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(request.Context())
+			if trace == nil || trace.GotFirstResponseByte == nil {
+				t.Fatal("first-byte trace hook not installed")
+			}
+			// Capture the callback but do NOT invoke it; RoundTrip returns an
+			// error immediately, so Execute returns before the callback fires.
+			firstByteCallback = trace.GotFirstResponseByte
+			return nil, context.Canceled
+		})
+		client, err := NewClient(&http.Client{Transport: transport}, "http://example.test/v1", "")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		observation := newObservation()
+		execErr := client.Execute(context.Background(), benchmark.Request{
+			RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+		}, &observation)
+		if execErr == nil || !errors.Is(execErr, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled", execErr)
+		}
+		if firstByteCallback == nil {
+			t.Fatal("RoundTrip did not capture the first-byte callback")
+		}
+
+		// Snapshot the observation after Execute returned.
+		before, err := json.Marshal(observation)
+		if err != nil {
+			t.Fatalf("marshal before: %v", err)
+		}
+
+		// Release the delayed callback now, after Execute has returned. This
+		// races the callback's private capture write against the caller's
+		// ownership of the observation.
+		firstByteCallback()
+		// Give the callback a moment to complete any work; the invariant is
+		// that whatever it does to its private state must not touch the
+		// observation.
+		time.Sleep(time.Millisecond)
+
+		after, err := json.Marshal(observation)
+		if err != nil {
+			t.Fatalf("marshal after: %v", err)
+		}
+		if string(before) != string(after) {
+			t.Fatalf("observation mutated after Execute returned by late callback\nbefore: %s\nafter:  %s", before, after)
+		}
+		if observation.FirstByteAt != nil || observation.FirstByteAfterNS != nil {
+			t.Fatalf("late callback mutated FirstByteAt/FirstByteAfterNS: %+v", observation)
+		}
+	})
+
+	t.Run("synchronous callback before error preserves first-byte timestamp", func(t *testing.T) {
+		start := time.Now()
+		timestamps := []time.Time{
+			start,                            // RequestStartedAt
+			start.Add(10 * time.Millisecond), // GotFirstResponseByte
+			start.Add(15 * time.Millisecond), // CompletedAt (deferred)
+		}
+		nextTimestamp := 0
+		transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			trace := httptrace.ContextClientTrace(request.Context())
+			if trace == nil || trace.GotFirstResponseByte == nil {
+				t.Fatal("first-byte trace hook not installed")
+			}
+			// Fire the callback synchronously, then return an error.
+			trace.GotFirstResponseByte()
+			return nil, context.Canceled
+		})
+		client, err := NewClient(&http.Client{Transport: transport}, "http://example.test/v1", "")
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+		client.now = func() time.Time {
+			if nextTimestamp >= len(timestamps) {
+				t.Fatalf("clock sampled more than %d times", len(timestamps))
+			}
+			observed := timestamps[nextTimestamp]
+			nextTimestamp++
+			return observed
+		}
+
+		observation := newObservation()
+		execErr := client.Execute(context.Background(), benchmark.Request{
+			RunID: "run-001", RequestID: "req-000001", Model: "model", Prompt: "prompt", MaxOutputTokens: 64,
+		}, &observation)
+		if execErr == nil || !errors.Is(execErr, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled", execErr)
+		}
+
+		// The first-byte timestamp captured synchronously before the error
+		// must be preserved in the partial observation.
+		if observation.FirstByteAt == nil || observation.FirstByteAfterNS == nil {
+			t.Fatalf("synchronous first-byte timestamp not preserved: %+v", observation)
+		}
+		wantOffset := (10 * time.Millisecond).Nanoseconds()
+		if *observation.FirstByteAfterNS != wantOffset {
+			t.Fatalf("FirstByteAfterNS = %d, want %d", *observation.FirstByteAfterNS, wantOffset)
+		}
+		if observation.RequestStartedAt == nil || observation.CompletedAt == nil {
+			t.Fatalf("partial observation missing start/completed: %+v", observation)
+		}
+	})
 }
