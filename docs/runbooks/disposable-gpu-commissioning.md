@@ -131,6 +131,7 @@ scripts/gpu_commission.sh \
   --expected-vllm-version 0.26.0 \
   --expected-dtype bfloat16 \
   --expected-tensor-parallel-size 1 \
+  --expected-world-size 1 \
   --expected-kv-cache-dtype auto \
   --expected-max-model-len 32768 \
   --expected-max-num-seqs 16 \

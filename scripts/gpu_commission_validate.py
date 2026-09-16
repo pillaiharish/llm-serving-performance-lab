@@ -116,8 +116,6 @@ def validate_server_config(value: dict[str, Any], expected: dict[str, Any]) -> d
                 raise ValidationError(f"server configuration {key} is {observed!r}, expected {wanted!r}")
         elif observed != wanted:
             raise ValidationError(f"server configuration {key} is {observed!r}, expected {wanted!r}")
-    if value["tensor_parallel_size"] != value["world_size"]:
-        raise ValidationError("server tensor_parallel_size and world_size disagree")
     return {key: value[key] for key in sorted(required)}
 
 
@@ -149,7 +147,8 @@ def parse_timestamp(value: str) -> dt.datetime:
     for format_string in ("%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z"):
         try:
             parsed = dt.datetime.strptime(value.strip(), format_string)
-            return parsed.replace(tzinfo=dt.timezone.utc) if parsed.tzinfo is None else parsed.astimezone(dt.timezone.utc)
+            local_zone = dt.datetime.now().astimezone().tzinfo
+            return parsed.replace(tzinfo=local_zone).astimezone(dt.timezone.utc) if parsed.tzinfo is None else parsed.astimezone(dt.timezone.utc)
         except ValueError:
             pass
     raise ValidationError(f"unparseable telemetry timestamp {value!r}")
@@ -178,7 +177,9 @@ def validate_telemetry(path: Path, started: float, ended: float, freshness_secon
                 float(row[offset])
             except ValueError as exc:
                 raise ValidationError(f"telemetry row {number} field {TELEMETRY_HEADER[offset]} is not numeric") from exc
-    if max(timestamps) < started - freshness_seconds or min(timestamps) > ended + freshness_seconds:
+    if timestamps != sorted(timestamps):
+        raise ValidationError("telemetry timestamps are not monotonic")
+    if min(timestamps) < started - freshness_seconds or max(timestamps) > ended + freshness_seconds:
         raise ValidationError("telemetry timestamps are stale relative to the benchmark")
     return {"schema": TELEMETRY_HEADER, "sample_count": len(rows) - 1, "first_timestamp": rows[1][0], "last_timestamp": rows[-1][0]}
 
@@ -188,7 +189,7 @@ def request_metric_files(run_root: Path) -> list[Path]:
 
 
 def validate_smoke(
-    smoke_root: Path, requests: int, warmup: int, concurrency: int, input_tokens: int,
+    smoke_root: Path, model: str, requests: int, warmup: int, concurrency: int, input_tokens: int,
     max_output: int, expected_output: int | None, token_timing: bool,
 ) -> dict[str, Any]:
     runs = sorted(path for path in smoke_root.iterdir() if path.is_dir()) if smoke_root.is_dir() else []
@@ -199,16 +200,27 @@ def validate_smoke(
     summary = load_json(run_root / "summary.json")
     if not (run_root / "summary.csv").is_file():
         raise ValidationError("smoke summary.csv is missing")
+    if run.get("schema_version") != 7 or summary.get("schema_version") != 7:
+        raise ValidationError("smoke run/summary schema must be 7")
     if run.get("run_status") != "completed" or summary.get("run_status") != "completed" or summary.get("complete") is not True:
         raise ValidationError("smoke run is not completed with complete summary")
+    if run.get("model") != model or run.get("temperature") != 0:
+        raise ValidationError("smoke model/temperature contract does not match")
     counts = summary.get("counts") or {}
     wanted_counts = {"requested_or_planned": requests, "started": requests, "completed": requests, "successful": requests, "failed": 0}
     for key, wanted in wanted_counts.items():
         if counts.get(key) != wanted:
             raise ValidationError(f"smoke counts.{key} is {counts.get(key)!r}, expected {wanted}")
     warmup_value = run.get("warmup") or {}
-    if warmup_value.get("requested") != warmup or warmup_value.get("attempted") != warmup:
+    expected_warmup = {"requested": warmup, "attempted": warmup, "completed": warmup, "successful": warmup, "failed": 0}
+    if any(warmup_value.get(key) != wanted for key, wanted in expected_warmup.items()):
         raise ValidationError("smoke discarded benchmark-request warmup contract is incomplete")
+    if warmup_value.get("status") != ("completed" if warmup else "skipped"):
+        raise ValidationError("smoke discarded benchmark-request warmup status does not match")
+    measurement = run.get("measurement") or {}
+    expected_measurement = {"requested": requests, "attempted": requests, "completed": requests, "successful": requests, "failed": 0}
+    if any(measurement.get(key) != wanted for key, wanted in expected_measurement.items()):
+        raise ValidationError("smoke measured request contract is incomplete")
     workload = summary.get("workload") or {}
     if workload.get("input_target_tokens") != input_tokens or workload.get("input_resolved_tokens") != input_tokens:
         raise ValidationError("smoke target/resolved input token contract does not match")
@@ -310,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     generation.add_argument("--expected-input", type=int); generation.add_argument("--expected-output", type=int)
     server = sub.add_parser("server-config")
     server.add_argument("--file", type=Path, required=True); server.add_argument("--model", required=True); server.add_argument("--vllm-version", required=True)
-    server.add_argument("--dtype", required=True); server.add_argument("--tensor-parallel-size", type=int, required=True); server.add_argument("--kv-cache-dtype", required=True)
+    server.add_argument("--dtype", required=True); server.add_argument("--tensor-parallel-size", type=int, required=True); server.add_argument("--world-size", type=int, required=True); server.add_argument("--kv-cache-dtype", required=True)
     server.add_argument("--max-model-len", type=int, required=True); server.add_argument("--max-num-seqs", type=int, required=True); server.add_argument("--gpu-memory-utilization", type=float, required=True)
     server.add_argument("--generation-config", required=True); server.add_argument("--thinking", choices=("true", "false", "not-applicable"), required=True)
     server.add_argument("--prefix-caching", type=bool_arg, required=True)
@@ -319,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     telemetry = sub.add_parser("telemetry")
     telemetry.add_argument("--file", type=Path, required=True); telemetry.add_argument("--started", type=float, required=True); telemetry.add_argument("--ended", type=float, required=True)
     smoke = sub.add_parser("smoke")
-    smoke.add_argument("--root", type=Path, required=True); smoke.add_argument("--requests", type=int, required=True); smoke.add_argument("--warmup", type=int, required=True)
+    smoke.add_argument("--root", type=Path, required=True); smoke.add_argument("--model", required=True); smoke.add_argument("--requests", type=int, required=True); smoke.add_argument("--warmup", type=int, required=True)
     smoke.add_argument("--concurrency", type=int, required=True); smoke.add_argument("--input-tokens", type=int, required=True); smoke.add_argument("--max-output", type=int, required=True)
     smoke.add_argument("--expected-output", type=int); smoke.add_argument("--token-timing", type=bool_arg, required=True)
     redact = sub.add_parser("redact")
@@ -334,13 +346,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "server-config":
             thinking: bool | str = args.thinking if args.thinking == "not-applicable" else args.thinking == "true"
             expected = {"model": args.model, "vllm_version": args.vllm_version, "dtype": args.dtype, "tensor_parallel_size": args.tensor_parallel_size,
-                        "world_size": args.tensor_parallel_size, "kv_cache_dtype": args.kv_cache_dtype, "max_model_len": args.max_model_len,
+                        "world_size": args.world_size, "kv_cache_dtype": args.kv_cache_dtype, "max_model_len": args.max_model_len,
                         "max_num_seqs": args.max_num_seqs, "gpu_memory_utilization": args.gpu_memory_utilization,
                         "generation_config": args.generation_config, "thinking": thinking, "prefix_caching": args.prefix_caching}
             result = validate_server_config(load_json(args.file), expected)
         elif args.command == "metrics": result = validate_metrics(args.file.read_text(encoding="utf-8"), args.expected_prefix)
         elif args.command == "telemetry": result = validate_telemetry(args.file, args.started, args.ended)
-        elif args.command == "smoke": result = validate_smoke(args.root, args.requests, args.warmup, args.concurrency, args.input_tokens, args.max_output, args.expected_output, args.token_timing)
+        elif args.command == "smoke": result = validate_smoke(args.root, args.model, args.requests, args.warmup, args.concurrency, args.input_tokens, args.max_output, args.expected_output, args.token_timing)
         elif args.command == "redact": result = scan_secrets(args.root, args.api_key_env)
         else: result = make_manifest(args.root, args.output)
     except (OSError, ValidationError) as exc:

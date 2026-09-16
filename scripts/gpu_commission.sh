@@ -17,6 +17,7 @@ Required:
   --expected-vllm-version VERSION
   --expected-dtype DTYPE
   --expected-tensor-parallel-size N
+  --expected-world-size N
   --expected-kv-cache-dtype DTYPE
   --expected-max-model-len N
   --expected-max-num-seqs N
@@ -43,7 +44,7 @@ EOF
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 helper="$script_dir/gpu_commission_validate.py"
 evidence_root="" slentore_repo="" expected_sha="" slentore_bin="" base_url="" model="" api_key_env=""
-server_config="" expected_vllm="" expected_dtype="" expected_tp="" expected_kv_dtype="" expected_max_len=""
+server_config="" expected_vllm="" expected_dtype="" expected_tp="" expected_world_size="" expected_kv_dtype="" expected_max_len=""
 expected_max_seqs="" expected_gpu_util="" expected_generation_config="" expected_thinking="" expected_prefix=""
 input_tokens="" max_output="" expected_actual_output="" tokenizer_url="" metrics_url="" provider_label=""
 requests=3 warmup=1 concurrency=1 token_timing=vllm telemetry_interval=1
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --expected-vllm-version) need_value "$@"; expected_vllm=$2; shift 2 ;;
     --expected-dtype) need_value "$@"; expected_dtype=$2; shift 2 ;;
     --expected-tensor-parallel-size) need_value "$@"; expected_tp=$2; shift 2 ;;
+    --expected-world-size) need_value "$@"; expected_world_size=$2; shift 2 ;;
     --expected-kv-cache-dtype) need_value "$@"; expected_kv_dtype=$2; shift 2 ;;
     --expected-max-model-len) need_value "$@"; expected_max_len=$2; shift 2 ;;
     --expected-max-num-seqs) need_value "$@"; expected_max_seqs=$2; shift 2 ;;
@@ -85,7 +87,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-required=(evidence_root slentore_repo expected_sha slentore_bin base_url model api_key_env server_config expected_vllm expected_dtype expected_tp expected_kv_dtype expected_max_len expected_max_seqs expected_gpu_util expected_generation_config expected_thinking expected_prefix input_tokens max_output)
+required=(evidence_root slentore_repo expected_sha slentore_bin base_url model api_key_env server_config expected_vllm expected_dtype expected_tp expected_world_size expected_kv_dtype expected_max_len expected_max_seqs expected_gpu_util expected_generation_config expected_thinking expected_prefix input_tokens max_output)
 for name in "${required[@]}"; do
   [[ -n ${!name} ]] || { echo "error: --${name//_/-} is required" >&2; exit 2; }
 done
@@ -93,7 +95,7 @@ done
 [[ $expected_prefix == true || $expected_prefix == false ]] || { echo "error: --expected-prefix-caching must be true or false" >&2; exit 2; }
 [[ $expected_thinking == true || $expected_thinking == false || $expected_thinking == not-applicable ]] || { echo "error: invalid --expected-thinking" >&2; exit 2; }
 [[ $token_timing == vllm || $token_timing == disabled ]] || { echo "error: --token-timing must be vllm or disabled" >&2; exit 2; }
-for value_name in expected_tp expected_max_len expected_max_seqs input_tokens max_output requests concurrency; do
+for value_name in expected_tp expected_world_size expected_max_len expected_max_seqs input_tokens max_output requests concurrency; do
   [[ ${!value_name} =~ ^[1-9][0-9]*$ ]] || { echo "error: $value_name must be a positive integer" >&2; exit 2; }
 done
 [[ $warmup =~ ^[0-9]+$ ]] || { echo "error: warmup must be a nonnegative integer" >&2; exit 2; }
@@ -139,8 +141,8 @@ trap finish EXIT INT TERM
 
 auth_curl() {
   output=$1; shift
-  printf 'header = "Authorization: Bearer %s"\n' "${!api_key_env}" |
-    curl --silent --show-error --fail-with-body --config - --output "$output" "$@"
+  printf 'Authorization: Bearer %s\n' "${!api_key_env}" |
+    curl --silent --show-error --fail-with-body -H @- --output "$output" "$@"
 }
 
 current_gate=contract
@@ -201,7 +203,7 @@ nvidia-smi --query-gpu=index,name,memory.total,uuid,driver_version,power.limit -
 current_gate=server_configuration
 cp "$server_config" "$attempt/server/config.json"
 "$helper" server-config --file "$attempt/server/config.json" --model "$model" --vllm-version "$expected_vllm" \
-  --dtype "$expected_dtype" --tensor-parallel-size "$expected_tp" --kv-cache-dtype "$expected_kv_dtype" \
+  --dtype "$expected_dtype" --tensor-parallel-size "$expected_tp" --world-size "$expected_world_size" --kv-cache-dtype "$expected_kv_dtype" \
   --max-model-len "$expected_max_len" --max-num-seqs "$expected_max_seqs" --gpu-memory-utilization "$expected_gpu_util" \
   --generation-config "$expected_generation_config" --thinking "$expected_thinking" --prefix-caching "$expected_prefix" \
   >"$attempt/server/config-validation.json"
@@ -272,7 +274,7 @@ telemetry_pid=""
 "$helper" telemetry --file "$telemetry" --started "$benchmark_started" --ended "$benchmark_ended" >"$attempt/telemetry/validation.json"
 
 current_gate=smoke_validation
-smoke_validate=("$helper" smoke --root "$attempt/smoke" --requests "$requests" --warmup "$warmup" --concurrency "$concurrency" \
+smoke_validate=("$helper" smoke --root "$attempt/smoke" --model "$model" --requests "$requests" --warmup "$warmup" --concurrency "$concurrency" \
   --input-tokens "$input_tokens" --max-output "$max_output" --token-timing "$([[ $token_timing == vllm ]] && echo true || echo false)")
 if [[ -n $expected_actual_output ]]; then smoke_validate+=(--expected-output "$expected_actual_output"); fi
 "${smoke_validate[@]}" >"$attempt/smoke/validation.json"

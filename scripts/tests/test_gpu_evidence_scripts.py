@@ -97,6 +97,8 @@ class HelperTests(unittest.TestCase):
                   "kv_cache_dtype": "auto", "max_model_len": 4096, "max_num_seqs": 16, "gpu_memory_utilization": 0.9,
                   "generation_config": "vllm", "thinking": False, "prefix_caching": True}
         self.assertEqual(verify.validate_server_config(config, config)["world_size"], 1)
+        divergent = dict(config, world_size=2)
+        self.assertEqual(verify.validate_server_config(divergent, divergent)["world_size"], 2)
 
     def test_token_and_generation_counts_are_separate(self):
         self.assertEqual(verify.validate_tokenize({"count": 3, "tokens": [1, 2, 3]}, 3)["probe_resolved_tokens"], 3)
@@ -125,7 +127,7 @@ class HelperTests(unittest.TestCase):
             path.write_text(",".join(verify.TELEMETRY_HEADER) + "\nmalformed\n", encoding="utf-8")
             with self.assertRaises(verify.ValidationError):
                 verify.validate_telemetry(path, now, now)
-            stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            stamp = dt.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
             row = [stamp, "0", "GPU-fixture", "Fixture GPU", "100", "1000", "50", "200", "300", "40", "1200"]
             path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join(row) + "\n", encoding="utf-8")
             self.assertEqual(verify.validate_telemetry(path, now, now)["sample_count"], 1)
@@ -145,18 +147,21 @@ class HelperTests(unittest.TestCase):
             smoke = Path(temporary)
             (smoke / "run-1").mkdir()
             with self.assertRaises(verify.ValidationError):
-                verify.validate_smoke(smoke, 1, 0, 1, 8, 4, None, True)
+                verify.validate_smoke(smoke, MODEL, 1, 0, 1, 8, 4, None, True)
             make_run(smoke, input_tokens=9)
             shutil.rmtree(smoke / "run-1")
             with self.assertRaises(verify.ValidationError):
-                verify.validate_smoke(smoke, 1, 0, 1, 8, 4, None, True)
+                verify.validate_smoke(smoke, MODEL, 1, 0, 1, 8, 4, None, True)
 
 
 def make_run(smoke: Path, *, requests=1, warmup=0, input_tokens=8, max_output=4, actual_output=2, summary=True):
     root = smoke / "run-fixture"
-    run = {"run_id": "run-fixture", "run_status": "completed", "warmup": {"requested": warmup, "attempted": warmup},
+    warmup_status = "completed" if warmup else "skipped"
+    run = {"schema_version": 7, "run_id": "run-fixture", "run_status": "completed", "model": MODEL, "temperature": 0,
+           "warmup": {"status": warmup_status, "requested": warmup, "attempted": warmup, "completed": warmup, "successful": warmup, "failed": 0},
+           "measurement": {"requested": requests, "attempted": requests, "completed": requests, "successful": requests, "failed": 0},
            "token_timing": {"mode": "vllm", "source": verify.ITL_SOURCE}}
-    result = {"run_id": "run-fixture", "run_status": "completed", "complete": True,
+    result = {"schema_version": 7, "run_id": "run-fixture", "run_status": "completed", "complete": True,
               "workload": {"input_target_tokens": 8, "input_resolved_tokens": 8, "requested_output_max_tokens": max_output},
               "load": {"mode": "closed_loop", "closed_loop": {"requested_concurrency": 1}},
               "counts": {"requested_or_planned": requests, "started": requests, "completed": requests, "successful": requests, "failed": 0}}
@@ -213,8 +218,9 @@ if mode == "exit1":
     raise SystemExit(1)
 requests = int(value("--requests")); warmup = int(value("--warmup-requests")); target = int(value("--input-tokens")); maximum = int(value("--max-output-tokens"))
 root = out / "run-fixture"; root.mkdir()
-run = {{"run_id":"run-fixture","run_status":"completed","warmup":{{"requested":warmup,"attempted":warmup}},"token_timing":{{"mode":"vllm","source":"{verify.ITL_SOURCE}"}}}}
-summary = {{"run_id":"run-fixture","run_status":"completed","complete":True,"workload":{{"input_target_tokens":target,"input_resolved_tokens":target,"requested_output_max_tokens":maximum}},"load":{{"mode":"closed_loop","closed_loop":{{"requested_concurrency":int(value("--concurrency"))}}}},"counts":{{"requested_or_planned":requests,"started":requests,"completed":requests,"successful":requests,"failed":0}}}}
+warmup_status = "completed" if warmup else "skipped"
+run = {{"schema_version":7,"run_id":"run-fixture","run_status":"completed","model":"{MODEL}","temperature":0,"warmup":{{"status":warmup_status,"requested":warmup,"attempted":warmup,"completed":warmup,"successful":warmup,"failed":0}},"measurement":{{"requested":requests,"attempted":requests,"completed":requests,"successful":requests,"failed":0}},"token_timing":{{"mode":"vllm","source":"{verify.ITL_SOURCE}"}}}}
+summary = {{"schema_version":7,"run_id":"run-fixture","run_status":"completed","complete":True,"workload":{{"input_target_tokens":target,"input_resolved_tokens":target,"requested_output_max_tokens":maximum}},"load":{{"mode":"closed_loop","closed_loop":{{"requested_concurrency":int(value("--concurrency"))}}}},"counts":{{"requested_or_planned":requests,"started":requests,"completed":requests,"successful":requests,"failed":0}}}}
 (root / "run.json").write_text(json.dumps(run))
 if mode != "missing-summary":
     (root / "summary.json").write_text(json.dumps(summary)); (root / "summary.csv").write_text("header\\nrow\\n")
@@ -231,7 +237,7 @@ for number in range(1, requests + 1):
 import datetime, sys
 args = " ".join(sys.argv[1:])
 if "timestamp,index,uuid" in args:
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+    stamp = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
     print(f"{stamp}, 0, GPU-fixture, Fixture GPU, 100, 1000, 50, 200, 300, 40, 1200")
 elif "--query-gpu=" in args:
     print("index, name, memory.total [MiB], uuid, driver_version, power.limit [W]")
@@ -246,7 +252,7 @@ else:
                 "--expected-slentore-sha", sha or self.sha, "--slentore-bin", str(self.slentore),
                 "--base-url", base + "/v1", "--model", model, "--api-key-env", "TEST_API_KEY",
                 "--server-config", str(self.config), "--expected-vllm-version", "0.26.0", "--expected-dtype", "bfloat16",
-                "--expected-tensor-parallel-size", "1", "--expected-kv-cache-dtype", "auto", "--expected-max-model-len", "4096",
+                "--expected-tensor-parallel-size", "1", "--expected-world-size", "1", "--expected-kv-cache-dtype", "auto", "--expected-max-model-len", "4096",
                 "--expected-max-num-seqs", "16", "--expected-gpu-memory-utilization", "0.9", "--expected-generation-config", "vllm",
                 "--expected-thinking", "false", "--expected-prefix-caching", "true", "--input-tokens", "8", "--max-output-tokens", "4",
                 "--expected-actual-output-tokens", "2", "--requests", "1", "--warmup-requests", "0", "--telemetry-interval", "0.05"]
