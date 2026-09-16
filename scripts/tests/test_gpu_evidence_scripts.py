@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -33,6 +34,7 @@ def write_json(path: Path, value):
 class Handler(BaseHTTPRequestHandler):
     prefix = True
     models_enabled = True
+    version = "0.26.0"
 
     def log_message(self, *_args):
         pass
@@ -58,6 +60,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_value(200, {"data": [{"id": MODEL, "max_model_len": 4096}]})
         elif self.path == "/v1/models":
             self.send_value(401 if not self.authenticated() else 404, {"error": "unavailable"})
+        elif self.path == "/version" and self.authenticated():
+            self.send_value(200, {"version": self.version} if self.version is not None else {"unexpected": True})
         else:
             self.send_value(404, {"error": "not found"})
 
@@ -75,8 +79,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 @contextlib.contextmanager
-def fake_server(*, prefix=True, models=True):
-    handler = type("ConfiguredHandler", (Handler,), {"prefix": prefix, "models_enabled": models})
+def fake_server(*, prefix=True, models=True, version="0.26.0"):
+    handler = type("ConfiguredHandler", (Handler,), {"prefix": prefix, "models_enabled": models, "version": version})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -99,6 +103,24 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(verify.validate_server_config(config, config)["world_size"], 1)
         divergent = dict(config, world_size=2)
         self.assertEqual(verify.validate_server_config(divergent, divergent)["world_size"], 2)
+        with self.assertRaises(verify.ValidationError):
+            verify.validate_server_config(dict(config, api_key=SECRET), config)
+
+    def test_live_version_and_gpu_contracts(self):
+        self.assertEqual(verify.validate_version({"version": "0.26.0"}, "0.26.0")["observed_vllm_version"], "0.26.0")
+        with self.assertRaises(verify.ValidationError):
+            verify.validate_version({"version": "0.25.0"}, "0.26.0")
+        with self.assertRaises(verify.ValidationError):
+            verify.validate_version({"unexpected": True}, "0.26.0")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "gpus.csv"
+            path.write_text("gpu_index,gpu_name,memory_total_mib,gpu_uuid,driver_version,power_limit_w\n0,Fixture GPU,1000,GPU-fixture,999.0,300\n", encoding="utf-8")
+            result = verify.validate_gpu(path, 1, "Fixture GPU", 1000)
+            self.assertTrue(result["identity_asserted"])
+            self.assertFalse(verify.validate_gpu(path, None, None, None)["identity_asserted"])
+            for expected in ((2, "Fixture GPU", 1000), (1, "Wrong GPU", 1000), (1, "Fixture GPU", 2000)):
+                with self.assertRaises(verify.ValidationError):
+                    verify.validate_gpu(path, *expected)
 
     def test_token_and_generation_counts_are_separate(self):
         self.assertEqual(verify.validate_tokenize({"count": 3, "tokens": [1, 2, 3]}, 3)["probe_resolved_tokens"], 3)
@@ -130,7 +152,34 @@ class HelperTests(unittest.TestCase):
             stamp = dt.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
             row = [stamp, "0", "GPU-fixture", "Fixture GPU", "100", "1000", "50", "200", "300", "40", "1200"]
             path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join(row) + "\n", encoding="utf-8")
-            self.assertEqual(verify.validate_telemetry(path, now, now)["sample_count"], 1)
+            result = verify.validate_telemetry(path, now - 1, now + 1)
+            self.assertEqual(result["sample_count"], 1)
+            self.assertEqual(result["samples_in_benchmark_window"], 1)
+            before = dt.datetime.fromtimestamp(now - 10).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join([before, *row[1:]]) + "\n", encoding="utf-8")
+            with self.assertRaises(verify.ValidationError):
+                verify.validate_telemetry(path, now - 1, now + 1)
+            stale = dt.datetime.fromtimestamp(now - 1000).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join([stale, *row[1:]]) + "\n", encoding="utf-8")
+            with self.assertRaises(verify.ValidationError):
+                verify.validate_telemetry(path, now - 1, now + 1)
+            first = dt.datetime.fromtimestamp(now + 0.5).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            second = dt.datetime.fromtimestamp(now).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join([first, *row[1:]]) + "\n" + ",".join([second, *row[1:]]) + "\n", encoding="utf-8")
+            with self.assertRaises(verify.ValidationError):
+                verify.validate_telemetry(path, now - 1, now + 1)
+            after = dt.datetime.fromtimestamp(now + 10).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+            path.write_text(",".join(verify.TELEMETRY_HEADER) + "\n" + ",".join([after, *row[1:]]) + "\n", encoding="utf-8")
+            with self.assertRaises(verify.ValidationError):
+                verify.validate_telemetry(path, now - 1, now + 1)
+
+    def test_hash_sidecar_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); source = root / "archive.tar.gz"; sidecar = root / "archive.tar.gz.sha256"
+            source.write_bytes(b"portable hash fixture")
+            result = verify.hash_file(source, sidecar)
+            self.assertEqual(result["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertTrue(verify.verify_hash(source, sidecar)["verified"])
 
     def test_redaction_rejects_exact_and_shaped_secrets(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -217,6 +266,7 @@ if mode == "exit1":
     (out / "partial.txt").write_text("preserved\\n")
     raise SystemExit(1)
 requests = int(value("--requests")); warmup = int(value("--warmup-requests")); target = int(value("--input-tokens")); maximum = int(value("--max-output-tokens"))
+import time; time.sleep(0.12)
 root = out / "run-fixture"; root.mkdir()
 warmup_status = "completed" if warmup else "skipped"
 run = {{"schema_version":7,"run_id":"run-fixture","run_status":"completed","model":"{MODEL}","temperature":0,"warmup":{{"status":warmup_status,"requested":warmup,"attempted":warmup,"completed":warmup,"successful":warmup,"failed":0}},"measurement":{{"requested":requests,"attempted":requests,"completed":requests,"successful":requests,"failed":0}},"token_timing":{{"mode":"vllm","source":"{verify.ITL_SOURCE}"}}}}
@@ -239,9 +289,8 @@ args = " ".join(sys.argv[1:])
 if "timestamp,index,uuid" in args:
     stamp = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
     print(f"{stamp}, 0, GPU-fixture, Fixture GPU, 100, 1000, 50, 200, 300, 40, 1200")
-elif "--query-gpu=" in args:
-    print("index, name, memory.total [MiB], uuid, driver_version, power.limit [W]")
-    print("0, Fixture GPU, 1000 MiB, GPU-fixture, 999.0, 300 W")
+elif "index,name,memory.total" in args:
+    print("0, Fixture GPU, 1000, GPU-fixture, 999.0, 300")
 else:
     print("Fixture NVIDIA SMI")
 ''', encoding="utf-8")
@@ -255,7 +304,8 @@ else:
                 "--expected-tensor-parallel-size", "1", "--expected-world-size", "1", "--expected-kv-cache-dtype", "auto", "--expected-max-model-len", "4096",
                 "--expected-max-num-seqs", "16", "--expected-gpu-memory-utilization", "0.9", "--expected-generation-config", "vllm",
                 "--expected-thinking", "false", "--expected-prefix-caching", "true", "--input-tokens", "8", "--max-output-tokens", "4",
-                "--expected-actual-output-tokens", "2", "--requests", "1", "--warmup-requests", "0", "--telemetry-interval", "0.05"]
+                "--expected-actual-output-tokens", "2", "--expected-gpu-count", "1", "--expected-gpu-name", "Fixture GPU",
+                "--expected-gpu-memory-mib", "1000", "--requests", "1", "--warmup-requests", "0", "--telemetry-interval", "0.05"]
 
     def run_command(self, command, **extra_env):
         env = os.environ.copy()
@@ -271,6 +321,12 @@ else:
         archive = Path(str(evidence) + ".tar.gz")
         expected = Path(str(archive) + ".sha256").read_text().split()[0]
         self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), expected)
+        with tarfile.open(archive) as handle:
+            names = handle.getnames()
+            self.assertTrue(any(name.endswith("/commissioning/validation.json") for name in names))
+            self.assertFalse(any("/attempts/" in name for name in names))
+        canonical = json.loads((evidence / "commissioning" / "server" / "config.json").read_text())
+        self.assertEqual(set(canonical), {"model", "vllm_version", "dtype", "tensor_parallel_size", "world_size", "kv_cache_dtype", "max_model_len", "max_num_seqs", "gpu_memory_utilization", "generation_config", "thinking", "prefix_caching"})
         self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=self.repo, text=True), "")
         for path in evidence.rglob("*"):
             if path.is_file():
@@ -326,6 +382,44 @@ else:
         with fake_server(prefix=False) as base:
             prefix = self.run_command(self.command(self.root / "prefix-mismatch", base))
         self.assertNotEqual(prefix.returncode, 0)
+
+    def test_operator_config_secret_is_rejected_before_persistence(self):
+        value = json.loads(self.config.read_text()); value["api_key"] = SECRET; write_json(self.config, value)
+        evidence = self.root / "unsafe-config"
+        with fake_server() as base:
+            result = self.run_command(self.command(evidence, base))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((evidence / "commissioning").exists())
+        for path in evidence.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(SECRET.encode(), path.read_bytes(), path)
+
+    def test_live_version_mismatch_and_malformed_fail(self):
+        with fake_server(version="0.25.0") as base:
+            mismatch = self.run_command(self.command(self.root / "version-mismatch", base))
+        with fake_server(version=None) as base:
+            malformed = self.run_command(self.command(self.root / "version-malformed", base))
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertNotEqual(malformed.returncode, 0)
+
+    def test_gpu_identity_mismatches_fail(self):
+        cases = (("--expected-gpu-count", "2"), ("--expected-gpu-name", "Wrong GPU"), ("--expected-gpu-memory-mib", "2000"))
+        with fake_server() as base:
+            for index, (flag, value) in enumerate(cases):
+                command = self.command(self.root / f"gpu-mismatch-{index}", base)
+                command[command.index(flag) + 1] = value
+                self.assertNotEqual(self.run_command(command).returncode, 0)
+
+    def test_finalization_failures_never_promote(self):
+        with fake_server() as base:
+            for gate, expected_gate in (("manifest", "manifest_finalization"), ("archive", "archive_finalization")):
+                evidence = self.root / f"fail-{gate}"
+                result = self.run_command(self.command(evidence, base), SLENTORE_COMMISSION_TEST_FAIL_AT=gate)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((evidence / "commissioning").exists())
+                validations = list((evidence / "attempts").glob("*/validation.json"))
+                self.assertEqual(len(validations), 1)
+                self.assertEqual(json.loads(validations[0].read_text())["failed_gate"], expected_gate)
 
 
 if __name__ == "__main__":

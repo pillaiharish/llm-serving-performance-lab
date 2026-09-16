@@ -109,14 +109,64 @@ def validate_server_config(value: dict[str, Any], expected: dict[str, Any]) -> d
     missing = sorted(required - value.keys())
     if missing:
         raise ValidationError(f"server configuration is missing fields: {', '.join(missing)}")
+    unknown = sorted(value.keys() - required)
+    if unknown:
+        raise ValidationError(f"server configuration has unsupported fields: {', '.join(unknown)}")
     for key, wanted in expected.items():
         observed = value.get(key)
         if key == "gpu_memory_utilization":
             if isinstance(observed, bool) or not isinstance(observed, (int, float)) or abs(float(observed) - float(wanted)) > 1e-9:
-                raise ValidationError(f"server configuration {key} is {observed!r}, expected {wanted!r}")
+                raise ValidationError(f"server configuration {key} does not match the expected value")
         elif observed != wanted:
-            raise ValidationError(f"server configuration {key} is {observed!r}, expected {wanted!r}")
+            raise ValidationError(f"server configuration {key} does not match the expected value")
     return {key: value[key] for key in sorted(required)}
+
+
+def validate_version(value: dict[str, Any], expected: str) -> dict[str, Any]:
+    if set(value) != {"version"} or not isinstance(value.get("version"), str) or not value["version"]:
+        raise ValidationError("/version response must contain only a nonempty version string")
+    if value["version"] != expected:
+        raise ValidationError(f"live vLLM version is {value['version']!r}, expected {expected!r}")
+    return {"expected_vllm_version": expected, "observed_vllm_version": value["version"]}
+
+
+def validate_gpu(
+    path: Path, expected_count: int | None, expected_name: str | None, expected_memory_mib: int | None,
+) -> dict[str, Any]:
+    expected_header = ["gpu_index", "gpu_name", "memory_total_mib", "gpu_uuid", "driver_version", "power_limit_w"]
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.reader(handle))
+    except OSError as exc:
+        raise ValidationError(f"cannot read GPU identity {path}: {exc}") from exc
+    if not rows or [cell.strip() for cell in rows[0]] != expected_header:
+        raise ValidationError("GPU identity header/schema is invalid")
+    observed = []
+    for number, row in enumerate(rows[1:], 2):
+        if len(row) != len(expected_header):
+            raise ValidationError(f"GPU identity row {number} has {len(row)} fields, expected {len(expected_header)}")
+        row = [cell.strip() for cell in row]
+        try:
+            index = int(row[0]); memory = int(row[2]); power = float(row[5])
+        except ValueError as exc:
+            raise ValidationError(f"GPU identity row {number} has invalid numeric evidence") from exc
+        if not row[1] or not row[3] or not row[4] or memory <= 0 or power <= 0:
+            raise ValidationError(f"GPU identity row {number} is incomplete")
+        observed.append({"gpu_index": index, "gpu_name": row[1], "memory_total_mib": memory,
+                         "gpu_uuid": row[3], "driver_version": row[4], "power_limit_w": power})
+    if not observed:
+        raise ValidationError("GPU identity contains no devices")
+    if expected_count is not None and len(observed) != expected_count:
+        raise ValidationError(f"GPU count is {len(observed)}, expected {expected_count}")
+    if expected_name is not None and any(item["gpu_name"] != expected_name for item in observed):
+        raise ValidationError(f"GPU name does not exactly match {expected_name!r}")
+    if expected_memory_mib is not None and any(item["memory_total_mib"] != expected_memory_mib for item in observed):
+        raise ValidationError(f"GPU memory does not exactly match {expected_memory_mib} MiB")
+    return {
+        "expected": {"gpu_count": expected_count, "gpu_name": expected_name, "gpu_memory_mib": expected_memory_mib},
+        "observed": {"gpu_count": len(observed), "gpus": observed},
+        "identity_asserted": any(value is not None for value in (expected_count, expected_name, expected_memory_mib)),
+    }
 
 
 def prometheus_labels(line: str) -> dict[str, str]:
@@ -181,7 +231,11 @@ def validate_telemetry(path: Path, started: float, ended: float, freshness_secon
         raise ValidationError("telemetry timestamps are not monotonic")
     if min(timestamps) < started - freshness_seconds or max(timestamps) > ended + freshness_seconds:
         raise ValidationError("telemetry timestamps are stale relative to the benchmark")
-    return {"schema": TELEMETRY_HEADER, "sample_count": len(rows) - 1, "first_timestamp": rows[1][0], "last_timestamp": rows[-1][0]}
+    samples_in_window = sum(started <= timestamp <= ended for timestamp in timestamps)
+    if samples_in_window == 0:
+        raise ValidationError("telemetry has no sample inside the benchmark window")
+    return {"schema": TELEMETRY_HEADER, "sample_count": len(rows) - 1, "samples_in_benchmark_window": samples_in_window,
+            "first_timestamp": rows[1][0], "last_timestamp": rows[-1][0]}
 
 
 def request_metric_files(run_root: Path) -> list[Path]:
@@ -295,11 +349,38 @@ def make_manifest(root: Path, output: Path) -> dict[str, Any]:
     records = []
     for path in sorted(item for item in root.rglob("*") if item.is_file() and item != output):
         relative = path.relative_to(root).as_posix()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = sha256_file(path)
         records.append({"path": relative, "sha256": digest, "size_bytes": path.stat().st_size})
     payload = {"manifest_schema_version": 1, "file_count": len(records), "files": records}
     write_json(output, payload)
     return payload
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hash_file(path: Path, output: Path, name: str | None = None) -> dict[str, Any]:
+    digest = sha256_file(path)
+    output.write_text(f"{digest}  {name or path.name}\n", encoding="utf-8")
+    return {"path": str(path), "sha256": digest, "size_bytes": path.stat().st_size}
+
+
+def verify_hash(path: Path, checksum: Path) -> dict[str, Any]:
+    try:
+        fields = checksum.read_text(encoding="utf-8").strip().split()
+    except OSError as exc:
+        raise ValidationError(f"cannot read checksum {checksum}: {exc}") from exc
+    if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{64}", fields[0]):
+        raise ValidationError("checksum sidecar is malformed")
+    observed = sha256_file(path)
+    if observed != fields[0]:
+        raise ValidationError("SHA-256 verification failed")
+    return {"path": str(path), "sha256": observed, "verified": True}
 
 
 def bool_arg(value: str) -> bool:
@@ -326,6 +407,11 @@ def main(argv: list[str] | None = None) -> int:
     server.add_argument("--max-model-len", type=int, required=True); server.add_argument("--max-num-seqs", type=int, required=True); server.add_argument("--gpu-memory-utilization", type=float, required=True)
     server.add_argument("--generation-config", required=True); server.add_argument("--thinking", choices=("true", "false", "not-applicable"), required=True)
     server.add_argument("--prefix-caching", type=bool_arg, required=True)
+    server.add_argument("--output", type=Path, required=True); server.add_argument("--api-key-env", default="")
+    version = sub.add_parser("version")
+    version.add_argument("--file", type=Path, required=True); version.add_argument("--expected", required=True); version.add_argument("--output", type=Path, required=True)
+    gpu = sub.add_parser("gpu")
+    gpu.add_argument("--file", type=Path, required=True); gpu.add_argument("--expected-count", type=int); gpu.add_argument("--expected-name"); gpu.add_argument("--expected-memory-mib", type=int)
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--file", type=Path, required=True); metrics.add_argument("--expected-prefix", type=bool_arg, required=True)
     telemetry = sub.add_parser("telemetry")
@@ -338,6 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     redact.add_argument("--root", type=Path, required=True); redact.add_argument("--api-key-env", default="")
     manifest = sub.add_parser("manifest")
     manifest.add_argument("--root", type=Path, required=True); manifest.add_argument("--output", type=Path, required=True)
+    hashing = sub.add_parser("hash")
+    hashing.add_argument("--file", type=Path, required=True); hashing.add_argument("--output", type=Path, required=True); hashing.add_argument("--name")
+    hash_verify = sub.add_parser("verify-hash")
+    hash_verify.add_argument("--file", type=Path, required=True); hash_verify.add_argument("--checksum", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "models": result = validate_models(load_json(args.file), args.model, args.max_model_len)
@@ -349,12 +439,24 @@ def main(argv: list[str] | None = None) -> int:
                         "world_size": args.world_size, "kv_cache_dtype": args.kv_cache_dtype, "max_model_len": args.max_model_len,
                         "max_num_seqs": args.max_num_seqs, "gpu_memory_utilization": args.gpu_memory_utilization,
                         "generation_config": args.generation_config, "thinking": thinking, "prefix_caching": args.prefix_caching}
-            result = validate_server_config(load_json(args.file), expected)
+            source = load_json(args.file)
+            secret = os.environ.get(args.api_key_env, "") if args.api_key_env else ""
+            source_text = args.file.read_text(encoding="utf-8")
+            if (secret and secret in source_text) or any(pattern.search(source_text) for pattern in SECRET_PATTERNS):
+                raise ValidationError("server configuration contains credential material")
+            result = validate_server_config(source, expected)
+            write_json(args.output, result)
+        elif args.command == "version":
+            result = validate_version(load_json(args.file), args.expected)
+            write_json(args.output, result)
+        elif args.command == "gpu": result = validate_gpu(args.file, args.expected_count, args.expected_name, args.expected_memory_mib)
         elif args.command == "metrics": result = validate_metrics(args.file.read_text(encoding="utf-8"), args.expected_prefix)
         elif args.command == "telemetry": result = validate_telemetry(args.file, args.started, args.ended)
         elif args.command == "smoke": result = validate_smoke(args.root, args.model, args.requests, args.warmup, args.concurrency, args.input_tokens, args.max_output, args.expected_output, args.token_timing)
         elif args.command == "redact": result = scan_secrets(args.root, args.api_key_env)
-        else: result = make_manifest(args.root, args.output)
+        elif args.command == "manifest": result = make_manifest(args.root, args.output)
+        elif args.command == "hash": result = hash_file(args.file, args.output, args.name)
+        else: result = verify_hash(args.file, args.checksum)
     except (OSError, ValidationError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

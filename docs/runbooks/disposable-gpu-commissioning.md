@@ -90,7 +90,11 @@ configuration and startup evidence. It is evidence, not a marketplace claim:
 }
 ```
 
-Every field is required. The CLI expectations must match this file.
+Every field is required and no additional fields are allowed. The CLI
+expectations must match this file. The original operator file is never copied
+into evidence; the script persists a newly generated canonical object
+containing only these twelve validated fields. Credential-shaped input is
+rejected before any operator-derived value is written under the evidence root.
 Prefix-cache state is also checked independently from the runtime vLLM
 Prometheus `vllm:cache_config_info` sample before and after the smoke run. A
 launch command or configuration file alone is not accepted as cache evidence.
@@ -139,6 +143,9 @@ scripts/gpu_commission.sh \
   --expected-generation-config vllm \
   --expected-thinking false \
   --expected-prefix-caching false \
+  --expected-gpu-count 1 \
+  --expected-gpu-name 'NVIDIA H100 80GB HBM3' \
+  --expected-gpu-memory-mib 81559 \
   --input-tokens 512 \
   --max-output-tokens 128 \
   --requests 3 \
@@ -147,8 +154,17 @@ scripts/gpu_commission.sh \
   --token-timing vllm
 ```
 
-Defaults derive `/health`, `/tokenize`, and `/metrics` from the server root.
-Use `--tokenizer-url` or `--metrics-url` when those endpoints differ.
+Defaults derive `/health`, `/version`, `/tokenize`, and `/metrics` from the
+server root. The authenticated live `/version` response must match
+`--expected-vllm-version`; use `--version-url` when it differs. Use
+`--tokenizer-url` or `--metrics-url` when those endpoints differ.
+
+The three `--expected-gpu-*` options are optional exact runtime assertions.
+When supplied, the observed `nvidia-smi` count, canonical device name, and
+memory per device must match. When omitted, GPU identity is capture-only and
+the validation artifact explicitly records that no hardware match was
+asserted. Provider marketplace metadata is never used. Confirm the exact name
+and MiB value reported by the target host before declaring them.
 
 Use `--expected-actual-output-tokens N` only when the experiment contract
 requires every successful smoke request to report exactly `N` output tokens.
@@ -172,20 +188,23 @@ The script fails if any of these checks fail:
 1. The expected Slentore SHA is not the checkout HEAD, the checkout is dirty,
    the binary is absent/non-executable, or `slentore version` does not identify
    the expected SHA. The binary SHA-256 is recorded.
-2. Runtime environment collection cannot observe NVIDIA GPU identity. Evidence
+2. Runtime environment collection cannot observe NVIDIA GPU identity, or an
+   explicitly configured GPU count/name/memory contract does not match. Evidence
    includes UTC time, OS, kernel, CPU, disk, GPU count/model/memory/UUID,
    driver, power limit, Python, and available PyTorch/CUDA/vLLM/tokenizer
    package versions.
 3. The supplied server configuration disagrees with the explicit expectations.
 4. `/health` fails. Health alone is insufficient: authenticated `/v1/models`
-   must expose the expected model and `max_model_len`, `/tokenize` must work,
-   and a minimal authenticated generation must return valid usage.
+   must expose the expected model and `max_model_len`, authenticated `/version`
+   must match the expected live vLLM version, `/tokenize` must work, and a
+   minimal authenticated generation must return valid usage.
 5. Unauthenticated inference is not rejected with HTTP 401 or 403.
 6. Runtime Prometheus evidence does not contain one consistent
    `vllm:cache_config_info` state matching the explicit expected prefix-cache
    value.
 7. The external `nvidia-smi` collector exits early, has the wrong schema, has
-   only a header, contains malformed/stale rows, or cannot be stopped cleanly.
+   only a header, contains malformed/stale/nonmonotonic rows, has no sample
+   inside the benchmark window, or cannot be stopped cleanly.
 8. The short Slentore closed-loop run fails, lacks a summary, has failures,
    violates the workload/concurrency/token contract, lacks server usage, or
    does not preserve the requested token-timing state.
@@ -216,9 +235,17 @@ If a gate fails, the attempt stays under `attempts/`, records the failed gate
 and exit code, and is never renamed as success. Inspect it, correct the cause,
 and rerun with a new `--evidence-root`; do not erase the failed evidence.
 
-On success the attempt becomes `<experiment-root>/commissioning/`. The script
-adds `manifest.json` with every included file's relative path, size, and
-SHA-256, then creates:
+On success the script copies the validated attempt into a private sibling
+staging directory, adds the final passed validation and manifest, scans the
+candidate again, and creates and verifies the archive/checksum under partial
+names. Only then is the staged candidate atomically promoted to
+`<experiment-root>/commissioning/`. The original attempt remains available to
+the failure trap until promotion and final renames have succeeded. A manifest,
+archive, checksum, or promotion failure therefore cannot leave a canonical
+directory claiming success.
+
+`manifest.json` records each included file's relative path, size, and SHA-256.
+The script creates:
 
 ```text
 <experiment-root>.tar.gz
@@ -230,6 +257,10 @@ credential-safe under the defined checks, but it is not a sanitized public
 report and may contain endpoint, model, host, and request-derived metadata.
 Inspect and curate separately before publication.
 
+SHA-256 generation and verification use Python's standard-library `hashlib`,
+not a host-specific `shasum` executable. The sidecar uses conventional
+`<hex><two spaces><filename>` formatting accepted by `sha256sum -c`.
+
 ## Copy-off and teardown gate
 
 The script intentionally does not copy files, call a provider API, or destroy
@@ -239,7 +270,7 @@ provider-specific address in repository automation:
 ```bash
 scp '<user>@<host>:<remote-path>/<experiment>.tar.gz' .
 scp '<user>@<host>:<remote-path>/<experiment>.tar.gz.sha256' .
-shasum -a 256 -c '<experiment>.tar.gz.sha256'
+sha256sum -c '<experiment>.tar.gz.sha256'
 tar -tzf '<experiment>.tar.gz'
 ```
 
