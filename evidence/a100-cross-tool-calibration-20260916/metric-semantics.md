@@ -9,7 +9,7 @@ Numerical proximity is assessed only after matching timing boundary and denomina
 | AIPerf | `time_to_first_token` | client request timing to first token | 100 profiling requests | Contextual | Stored output reports milliseconds. |
 | GuideLLM | raw `time_to_first_token_ms` | raw request start to first token | 100 raw requests | Contextual | Native finalized aggregate covers 98 requests. |
 | Slentore | TPOT | last-token minus first-token duration divided by output tokens minus one | 100 requests | Reference | Request-level decode cadence, ms/token. |
-| vLLM bench | TPOT | decode duration divided by output tokens minus one | 100 requests | Yes | Same denominator and client-visible streaming boundary for this workload. |
+| vLLM bench | TPOT | decode duration divided by output tokens minus one | 100 requests | Yes | Matching denominator and an aligned client-visible decode boundary for this controlled comparison. |
 | AIPerf | `inter_token_latency` | per-request decode duration divided by output tokens minus one | 100 profiling requests | Yes | Distinct from AIPerf `inter_chunk_latency`. |
 | GuideLLM | raw `inter_token_latency_ms` | raw-response last-token minus first-token duration divided by output tokens minus one | 100 raw requests | Yes | Nearest-rank request-level percentiles were recomputed. |
 | GuideLLM | native `time_per_output_token_ms` (TPOT) | includes a different front/timing boundary in the numerator | 98 finalized requests | No | Deliberately blank in the comparable-decode columns. |

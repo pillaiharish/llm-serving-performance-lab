@@ -10,7 +10,7 @@ This is a steady-state repeated-prompt warm-prefix-cache client metric calibrati
 
 The three repetitions used one NVIDIA A100-SXM4-40GB (40960 MiB, driver 580.105.08), Qwen/Qwen3-8B, and one vLLM 0.26.0 deployment. It used bfloat16 weights, TP=1, max model length 32768, max sequences 16, GPU memory utilization 0.90, KV-cache dtype `auto`, vLLM generation defaults, thinking disabled, and prefix caching enabled.
 
-Each tool ran closed-loop at concurrency 1 against a warm repeated prompt. Every final controlled request had exactly 23 server-reported input tokens and 32 output tokens; output maximum was 32 and temperature was 0. Each tool completed three 100-request repetitions. The prompt itself is intentionally not published.
+Each tool ran closed-loop at concurrency 1 against a warm repeated prompt. Every final controlled request had exactly 23 server-reported input tokens and 32 output tokens; output maximum was 32 and temperature was 0. Each tool's comparable raw/result cohort contains three 100-request repetitions. GuideLLM's native finalized aggregate is retained separately at 98 requests per repetition. The prompt itself is intentionally not published.
 
 This differs materially from the [prefix-cache-OFF controlled performance study](a100-qwen3-8b-prefixoff-20260916.md), including input length, output behavior, cache state, and purpose. Their absolute results must not be combined or interpreted as a cache-effect experiment.
 
