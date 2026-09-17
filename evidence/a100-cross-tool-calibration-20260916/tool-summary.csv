@@ -1,0 +1,5 @@
+tool,cohort,repetitions,mean_ttft_p50_ms,mean_ttft_p95_ms,mean_ttft_p99_ms,comparable_decode_metric_name,mean_decode_p50_ms,mean_decode_p95_ms,mean_decode_p99_ms,mean_e2e_p50_ms,mean_e2e_p95_ms,mean_e2e_p99_ms,mean_successful_requests_per_second,mean_output_tokens_per_second
+Slentore,summary-100,3,20.984189,26.945456,31.358221,TPOT (request-level decode duration/(output tokens-1)),13.546515,13.611472,13.732388,441.076653,446.749831,449.647546,2.264383,72.460269
+vLLM bench,result-100,3,22.090426,29.133978,35.244668,TPOT,13.544507,13.621546,13.770446,442.046679,448.412116,454.888800,2.257443,72.238164
+NVIDIA AIPerf,profiling-100,3,20.589930,28.232038,34.377671,inter_token_latency,13.555402,13.683548,13.884841,441.055503,449.029267,452.300000,2.251462,72.046778
+GuideLLM,raw-request-100,3,22.429784,28.707584,32.856464,raw-response inter_token_latency_ms,13.538455,13.602913,13.709445,442.515055,447.448651,451.290925,2.253775,72.120785
