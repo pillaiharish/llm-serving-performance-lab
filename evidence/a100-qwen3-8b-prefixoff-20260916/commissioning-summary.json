@@ -1,0 +1,36 @@
+{
+  "commissioning_schema_version": 1,
+  "status": "passed",
+  "measurement_slentore_sha": "4a573b104970d7300ebebd136548e0c679fd4f74",
+  "gpu": {
+    "count": 1,
+    "model": "NVIDIA A100-SXM4-40GB",
+    "memory_mib": 40960,
+    "uuid": "GPU-c757cde4-7971-d84f-7ba0-b6f48a1bda1c",
+    "driver_version": "580.105.08",
+    "power_limit_w": 400.0
+  },
+  "server": {
+    "vllm_expected_version": "0.26.0",
+    "vllm_observed_version": "0.26.0",
+    "prefix_caching_expected": false,
+    "prefix_caching_observed_before": false,
+    "prefix_caching_observed_after": false
+  },
+  "telemetry": {
+    "sample_count": 15,
+    "samples_inside_benchmark_window": 14
+  },
+  "smoke": {
+    "requested_input_tokens": 512,
+    "resolved_input_tokens": 512,
+    "requested_max_output_tokens": 128,
+    "actual_output_tokens": [41, 41, 41, 41, 41],
+    "concurrency": 1,
+    "measured_requests": 5,
+    "successful_requests": 5,
+    "failed_requests": 0,
+    "true_itl_available_requests": 5,
+    "true_itl_unavailable_requests": 0
+  }
+}
