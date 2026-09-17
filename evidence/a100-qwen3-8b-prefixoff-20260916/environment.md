@@ -13,7 +13,7 @@ following environment.
 | NVIDIA driver | 580.105.08 |
 | vLLM | 0.26.0, V1 engine |
 | Model | `Qwen/Qwen3-8B` |
-| Model snapshot | `b968826d9c46dd6066d109eabc6255188de91218` |
+| Recovered HF cache snapshot (`main`) | `b968826d9c46dd6066d109eabc6255188de91218` |
 | Weight dtype | bfloat16 |
 | KV cache dtype | auto |
 | Tensor parallel / world size | 1 / 1 |
@@ -27,8 +27,8 @@ following environment.
 | Slentore version string | `v0.0.0-20260830170145-4a573b104970` |
 
 The open-loop archive records the Hugging Face `main` ref and the sole cached
-snapshot as the model snapshot shown above. Earlier phase archives do not each
-contain a separate model-revision file. The startup record reports
+snapshot shown above. Earlier phase archives do not each contain a separate
+model-revision file. The startup record reports
 `revision=None`, so the recovered cache evidence—not a user-pinned launch
 argument—is the revision provenance.
 

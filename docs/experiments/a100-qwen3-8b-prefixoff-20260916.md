@@ -20,7 +20,7 @@ The server was vLLM 0.26.0 on one NVIDIA A100-SXM4-40GB (40,960 MiB), using
 `max_model_len=32768`, `max_num_seqs=16`, and
 `gpu_memory_utilization=0.90`. Generation configuration was `vllm`, thinking
 was disabled, and prefix caching was explicitly disabled. The detailed
-qualified environment and recovered model snapshot are recorded in
+qualified environment and recovered HF cache snapshot provenance are recorded in
 [`environment.md`](../../evidence/a100-qwen3-8b-prefixoff-20260916/environment.md).
 
 Measurements used Slentore commit
@@ -119,7 +119,7 @@ and 102 ms.
 
 At 13 req/s, delivery remained complete and client limiting remained zero, but
 mean maximum in-flight rose to 49, TTFT p95 to 2,609 ms, and E2E p95 to 3,771
-ms. This is the clearest observed saturation transition: queue/in-flight
+ms. This is the clearest observed saturation transition: client in-flight
 pressure and client-visible tail latency expanded before the configured client
 admission ceiling was reached.
 
@@ -178,8 +178,8 @@ remain the source of truth.
 The concurrency package's internal manifest includes a digest entry for
 itself. That single entry cannot verify after the manifest is finalized; all
 13,069 other entries match, and the outer archive matches its external
-sidecar. The package was not rewritten. The exact model snapshot is persisted
-in the open-loop environment archive rather than independently duplicated in
-each earlier phase archive. See
+sidecar. The package was not rewritten. The sole cached snapshot referenced by
+Hugging Face `main` is recorded in the open-loop environment archive rather
+than independently duplicated in each earlier phase archive. See
 [`evidence-audit.md`](../../evidence/a100-qwen3-8b-prefixoff-20260916/evidence-audit.md)
 for the complete boundary.
