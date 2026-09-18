@@ -41,7 +41,7 @@ The [experiment and evidence index](docs/experiments/README.md) links the contro
 
 To reproduce the evidence lifecycle on an already-provisioned endpoint, use the provider-neutral [disposable GPU commissioning runbook](docs/runbooks/disposable-gpu-commissioning.md). It validates a GPU/vLLM environment and preserves evidence; it does not provision GPUs.
 
-Current release state and remaining exact-SHA gates are recorded in [V1 readiness](docs/releases/v1-readiness.md).
+Slentore [v1.0.0](https://github.com/pillaiharish/llm-serving-performance-lab/releases/tag/v1.0.0) is the current stable release. Its release status, exact-SHA qualification, and evidence boundaries are recorded in [V1 readiness](docs/releases/v1-readiness.md).
 
 ## Build
 
