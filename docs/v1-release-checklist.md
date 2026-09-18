@@ -1,18 +1,25 @@
 # Slentore V1 release checklist
 
-Complete these gates in order. Merging documentation, evidence, or implementation work is not permission to tag.
+Slentore v1.0.0 completed this checklist against
+`e9787008633b1dcb5b0836a81db743242b4f41a1`.
+
+Release: [Slentore v1.0.0](https://github.com/pillaiharish/llm-serving-performance-lab/releases/tag/v1.0.0)
+
+These gates remain the documented V1 release process. Complete them in order;
+merging documentation, evidence, or implementation work is not permission to
+tag.
 
 ## A. Repository and CI readiness
 
-- [ ] `Quality (Go 1.22.x)` and `Quality (Go 1.25.5)` pass.
-- [ ] `Race`, `Client calibration smoke`, and `V1 acceptance fixture` pass.
-- [ ] Local Go 1.25.5 tests, vet, builds, race tests, module cleanliness, and
+- [x] `Quality (Go 1.22.x)` and `Quality (Go 1.25.5)` pass.
+- [x] `Race`, `Client calibration smoke`, and `V1 acceptance fixture` pass.
+- [x] Local Go 1.25.5 tests, vet, builds, race tests, module cleanliness, and
       formatting checks pass.
-- [ ] Separate-process clean closed/open calibration and deliberate
+- [x] Separate-process clean closed/open calibration and deliberate
       client-limited calibration have been inspected.
-- [ ] Calibration and acceptance artifacts contain no credential, prompt,
+- [x] Calibration and acceptance artifacts contain no credential, prompt,
       generated text, raw request/SSE JSON, or token IDs.
-- [ ] Calibration, release, acceptance, experiment, and release-note
+- [x] Calibration, release, acceptance, experiment, and release-note
       documentation is reviewed with no unresolved release blocker.
 
 The artifact consistency gate is already anchored by focused regression tests:
@@ -85,21 +92,23 @@ Normal GitHub CI deliberately uses only the deterministic fake server. It
 requires no GPU, hosted endpoint, Hugging Face credential, or other secret and
 does not replace this gate.
 
-Historical real-vLLM qualification exists for Slentore measurement SHA
+Historical controlled A100 evidence uses Slentore measurement SHA
 `4a573b104970d7300ebebd136548e0c679fd4f74` and supports the published A100
-evidence. It does not satisfy this gate for current `main`: a future `v1.0.0`
-tag still requires real-vLLM acceptance against a binary built from the exact
-final merged release SHA.
+studies. Slentore v1.0.0 separately passed real-vLLM acceptance against a
+binary built from the exact release SHA
+`e9787008633b1dcb5b0836a81db743242b4f41a1`. This acceptance was a functional
+and integration release gate, not a performance or capacity benchmark; its RTX
+A5000 environment does not establish GPU capacity.
 
 ## C. Reproducible-build and tag gate
 
-- [ ] `main` CI is green at the exact release SHA.
-- [ ] Real-vLLM acceptance passed against a binary built from that exact SHA.
-- [ ] The artifact verifier passed after the environment record was added.
-- [ ] The checkout is clean and the release SHA is recorded.
-- [ ] Reproducible binaries were built and checksummed.
-- [ ] Create the tag exactly `v1.0.0` only after every prior item passes.
-- [ ] A GitHub release may be created afterward; it is not part of these gates.
+- [x] `main` CI is green at the exact release SHA.
+- [x] Real-vLLM acceptance passed against a binary built from that exact SHA.
+- [x] The artifact verifier passed after the environment record was added.
+- [x] The checkout is clean and the release SHA is recorded.
+- [x] Reproducible binaries were built and checksummed.
+- [x] The tag `v1.0.0` was created after every prior item passed.
+- [x] The GitHub Release was created from the qualified tag.
 
 ## Reproducible build
 
