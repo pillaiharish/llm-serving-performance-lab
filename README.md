@@ -35,6 +35,14 @@ The existing
 describes one manually managed endpoint environment. Slentore does not
 provision it.
 
+## Controlled studies
+
+The [experiment and evidence index](docs/experiments/README.md) links the controlled A100 Qwen3-8B prefix-cache-OFF inference study and the A100 cross-tool client metric calibration. These studies publish scoped, sanitized evidence rather than universal performance or tool-ranking claims.
+
+To reproduce the evidence lifecycle on an already-provisioned endpoint, use the provider-neutral [disposable GPU commissioning runbook](docs/runbooks/disposable-gpu-commissioning.md). It validates a GPU/vLLM environment and preserves evidence; it does not provision GPUs.
+
+Current release state and remaining exact-SHA gates are recorded in [V1 readiness](docs/releases/v1-readiness.md).
+
 ## Build
 
 Slentore requires Go 1.22 or newer.
