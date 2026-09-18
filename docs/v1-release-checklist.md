@@ -1,8 +1,8 @@
 # Slentore V1 release checklist
 
-PR #22 is a merge gate, not permission to tag. Complete these gates in order.
+Complete these gates in order. Merging documentation, evidence, or implementation work is not permission to tag.
 
-## A. Merge gate
+## A. Repository and CI readiness
 
 - [ ] `Quality (Go 1.22.x)` and `Quality (Go 1.25.5)` pass.
 - [ ] `Race`, `Client calibration smoke`, and `V1 acceptance fixture` pass.
@@ -12,8 +12,8 @@ PR #22 is a merge gate, not permission to tag. Complete these gates in order.
       client-limited calibration have been inspected.
 - [ ] Calibration and acceptance artifacts contain no credential, prompt,
       generated text, raw request/SSE JSON, or token IDs.
-- [ ] Calibration, release, acceptance, and release-note documentation is
-      reviewed with no unresolved PR blocker.
+- [ ] Calibration, release, acceptance, experiment, and release-note
+      documentation is reviewed with no unresolved release blocker.
 
 The artifact consistency gate is already anchored by focused regression tests:
 artifact writer tests recalculate `RequestMetrics` from observations and the
@@ -26,9 +26,8 @@ proves the recorded typed scenario configuration against the exact experiment
 axes and ordered child-run configuration. These checks extend the evidence
 chain without duplicating the complete artifact and experiment writers.
 
-The repository currently has no branch protection. After PR #22 is merged,
-make the five CI checks above required for `main`. Do not change repository
-settings as part of PR #22.
+The final release commit on `main` must pass the five CI checks above. Repository
+settings are outside this documentation checklist.
 
 ## B. Real-vLLM acceptance gate
 
@@ -86,16 +85,21 @@ Normal GitHub CI deliberately uses only the deterministic fake server. It
 requires no GPU, hosted endpoint, Hugging Face credential, or other secret and
 does not replace this gate.
 
-## C. Tag and release gate
+Historical real-vLLM qualification exists for Slentore measurement SHA
+`4a573b104970d7300ebebd136548e0c679fd4f74` and supports the published A100
+evidence. It does not satisfy this gate for current `main`: a future `v1.0.0`
+tag still requires real-vLLM acceptance against a binary built from the exact
+final merged release SHA.
 
-- [ ] PR #22 is merged.
+## C. Reproducible-build and tag gate
+
 - [ ] `main` CI is green at the exact release SHA.
-- [ ] Real-vLLM acceptance passed against a binary built from that merged SHA.
+- [ ] Real-vLLM acceptance passed against a binary built from that exact SHA.
 - [ ] The artifact verifier passed after the environment record was added.
 - [ ] The checkout is clean and the release SHA is recorded.
 - [ ] Reproducible binaries were built and checksummed.
 - [ ] Create the tag exactly `v1.0.0` only after every prior item passes.
-- [ ] A GitHub release may be created afterward; it is not part of PR #22.
+- [ ] A GitHub release may be created afterward; it is not part of these gates.
 
 ## Reproducible build
 
